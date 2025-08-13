@@ -6,7 +6,6 @@
 #include <iostream>
 #include <linux/if.h>
 #include <linux/if_tun.h>
-#include <string>
 #include <sys/ioctl.h>
 #include <unistd.h>
 

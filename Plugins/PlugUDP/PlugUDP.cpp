@@ -2,19 +2,8 @@
 
 #include <boost/asio.hpp>
 
-#include <array>
-#include <atomic>
-#include <cstdint>
 #include <cstring>
 #include <deque>
-#include <functional>
-#include <memory>
-#include <mutex>
-#include <string>
-#include <thread>
-#include <unordered_map>
-#include <vector>
-#include <iostream>
 #include <arpa/inet.h>
 
 using boost::asio::ip::udp;

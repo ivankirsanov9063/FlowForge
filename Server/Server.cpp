@@ -3,17 +3,7 @@
 #include "Network.hpp"
 
 #include <csignal>
-#include <cstdint>
-#include <cstring>
-#include <cstdio>
 #include <fcntl.h>
-#include <functional>
-#include <iostream>
-#include <linux/if.h>
-#include <linux/if_tun.h>
-#include <string>
-#include <sys/ioctl.h>
-#include <sys/socket.h>
 #include <unistd.h>
 #include <cerrno>
 
