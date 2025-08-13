@@ -55,6 +55,17 @@ namespace NetConfig {
         return n == need;
     }
 
+    inline bool write_if_sysctl(const std::string& ifname, const char* key, const char* val) {
+        char path[256];
+        std::snprintf(path, sizeof(path), "/proc/sys/net/ipv6/conf/%s/%s", ifname.c_str(), key);
+        int fd = ::open(path, O_WRONLY | O_CLOEXEC);
+        if (fd < 0) return false;
+        const ssize_t need = static_cast<ssize_t>(std::strlen(val));
+        const ssize_t n = ::write(fd, val, need);
+        ::close(fd);
+        return n == need;
+    }
+
     inline nl_sock* nl_connect_route() {
         nl_sock* sk = nl_socket_alloc();
         if (!sk) return nullptr;
@@ -133,10 +144,16 @@ namespace NetConfig {
         rtnl_addr_set_local(a, l);
         rtnl_addr_set_prefixlen(a, prefix);
 
+        // ВАЖНО для туннеля: сразу отключаем DAD и авто-префикс-роуты,
+        // чтобы адрес стал usable мгновенно и ядро не лезло ставить свои маршруты.
+        rtnl_addr_set_flags(a, IFA_F_NODAD | IFA_F_NOPREFIXROUTE);
+
         const int rc = rtnl_addr_add(sk, a, 0);
-        nl_addr_put(l); rtnl_addr_put(a);
+        nl_addr_put(l);
+        rtnl_addr_put(a);
         return rc == 0 || rc == -NLE_EXIST;
     }
+
 
     inline bool route_add_onlink_host_v6(nl_sock* sk, int ifindex,
                                          const std::array<std::uint8_t,16>& dst128) {
@@ -211,11 +228,16 @@ namespace NetConfig {
         const int rc = nft_run_cmd_from_buffer(ctx, commands.c_str());
         if (rc != 0) {
             const char* err = nft_ctx_get_error_buffer(ctx);
-            // Повторы (exists) игнорируем
-            if (!err || std::strstr(err, "exists") == nullptr) {
-                nft_ctx_free(ctx);
-                return false;
+            bool benign = false;
+            if (err) {
+                // допускаем разные формулировки про существующие объекты
+                std::string e = err;
+                for (auto& c : e) c = std::tolower(c);
+                if (e.find("exist") != std::string::npos || e.find("already") != std::string::npos)
+                    benign = true;
             }
+            nft_ctx_free(ctx);
+            return benign;
         }
         nft_ctx_free(ctx);
         return true;
@@ -256,6 +278,12 @@ namespace NetConfig {
 
         // 1) link up + mtu
         ok &= link_set_up_and_mtu(sk, ifindex, p.mtu);
+
+        // Запретим RA/Autoconf на TUN и включим IPv6 на интерфейсе (на всякий случай)
+        write_if_sysctl(ifname, "accept_ra", "0");
+        write_if_sysctl(ifname, "autoconf",  "0");
+        write_if_sysctl(ifname, "disable_ipv6", "0");
+
 
         // 2) flush addresses
         ok &= addr_flush_all(sk, ifindex);

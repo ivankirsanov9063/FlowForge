@@ -76,6 +76,10 @@ int main(int argc, char** argv)
             std::fprintf(stderr, "if_set_mtu(%s): %s (continue)\n", tun.c_str(), std::strerror(-rc));
         }
 
+        write_proc_if_sysctl(tun, "accept_ra", "0\n");
+        write_proc_if_sysctl(tun, "autoconf",  "0\n");
+        write_proc_if_sysctl(tun, "disable_ipv6", "0\n");
+
         // libnl socket
         nl_sock* sk = nl_socket_alloc();
         if (!sk) { std::fprintf(stderr, "nl_socket_alloc failed\n"); return 1; }

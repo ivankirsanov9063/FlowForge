@@ -224,44 +224,100 @@ namespace ServerSide
         );
     }
 
+    static inline bool MakeVipKeyFromSrc(const std::uint8_t* p, std::size_t n, VipKey& out) noexcept {
+        if (n < 1) return false;
+        unsigned ver = (p[0] >> 4);
+        if (ver == 4) {
+            std::uint32_t v4{};
+            if (!iphelpers::ExtractIPv4Src(p,n,v4)) return false;
+            if ((v4 & 0xF0000000u) == 0xE0000000u || v4 == 0u) return false; // multicast/unspec
+            out = VipKey::FromV4(v4);
+            return true;
+        }
+        else if (ver == 6)
+        {
+            if (n < 40) return false;
+            std::array<std::uint8_t,16> v6{};
+            if (!iphelpers::ExtractIPv6Src(p,n,v6)) return false;
+            bool zero=true;
+            for (auto b: v6)
+            {
+                if (b)
+                {
+                    zero = false;
+                    break;
+                }
+            }
+            if (zero || v6[0]==0xFF) return false; // :: или multicast
+            out = VipKey::FromV6(v6);
+            return true;
+        }
+        return false;
+    }
+
+    static inline bool MakeVipKeyFromDst(const std::uint8_t* p, std::size_t n, VipKey& out) noexcept {
+        if (n < 1) return false;
+        unsigned ver = (p[0] >> 4);
+        if (ver == 4)
+        {
+            std::uint32_t v4{};
+            if (!iphelpers::ExtractIPv4Dst(p,n,v4)) return false;
+            if ((v4 & 0xF0000000u) == 0xE0000000u || v4 == 0u) return false;
+            out = VipKey::FromV4(v4);
+            return true;
+        }
+        else if (ver == 6)
+        {
+            if (n < 40) return false;
+            std::array<std::uint8_t,16> v6{};
+            if (!iphelpers::ExtractIPv6Dst(p,n,v6)) return false;
+            bool zero = true;
+            for (auto b: v6)
+            {
+                if (b)
+                {
+                    zero = false;
+                    break;
+                }
+            }
+            if (zero || v6[0]==0xFF) return false;
+            out = VipKey::FromV6(v6); return true;
+        }
+        return false;
+    }
+
     inline void StartRecvLoop()
     {
         auto buf  = std::make_shared<std::vector<std::uint8_t>>(BufCap);
         auto peer = std::make_shared<udp::endpoint>();
+
         sock->async_receive_from(
                 boost::asio::buffer(*buf), *peer,
-                [buf, peer](const boost::system::error_code& ec, std::size_t n) {
+                [buf, peer](const boost::system::error_code& ec, std::size_t n)
+                {
                     if (!ec && n > 0)
                     {
-                        // обучаем соответствие VIP(v4/v6) -> endpoint по src
+                        // Обучаем соответствие VIP(v4/v6) -> endpoint по SRC
                         VipKey key{};
-                        bool ok = false;
-
-                        std::uint32_t v4{};
-                        std::array<std::uint8_t,16> v6{};
-                        if (iphelpers::ExtractIPv4Src(buf->data(), n, v4)) {
-                            key = VipKey::FromV4(v4); ok = true;
-                        } else if (iphelpers::ExtractIPv6Src(buf->data(), n, v6)) {
-                            key = VipKey::FromV6(v6); ok = true;
-                        }
-
-                        if (ok)
-                        {
-                            std::lock_guard<std::mutex> lk(m_clients);
-                            auto& cl_ptr = vip_to_client[key];
+                        if (MakeVipKeyFromSrc(buf->data(), n, key)) {
+                            std::lock_guard<std::mutex> lk(ServerSide::m_clients);
+                            auto& cl_ptr = ServerSide::vip_to_client[key];
                             if (!cl_ptr) cl_ptr = std::make_unique<Client>();
                             cl_ptr->ep = *peer;
                             cl_ptr->last_seen_ms = NowMs();
                         }
 
-                        // складываем для отдачи в сеть
+                        // Складываем для отдачи в сеть
                         {
-                            std::lock_guard<std::mutex> lk(m_from);
-                            from_clients.emplace_back(reinterpret_cast<const char*>(buf->data()),
-                                                      reinterpret_cast<const char*>(buf->data()) + n);
+                            std::lock_guard<std::mutex> lk(ServerSide::m_from);
+                            ServerSide::from_clients.emplace_back(
+                                    reinterpret_cast<const char*>(buf->data()),
+                                    reinterpret_cast<const char*>(buf->data()) + n
+                            );
                         }
                     }
-                    if (sock) StartRecvLoop();
+
+                    if (ServerSide::sock) StartRecvLoop();
                 }
         );
     }
@@ -322,16 +378,7 @@ namespace ServerSide
     inline void EnqueueToClient(const std::uint8_t* p, std::size_t n)
     {
         VipKey key{};
-        bool ok = false;
-
-        std::uint32_t dst4{};
-        std::array<std::uint8_t,16> dst6{};
-        if (iphelpers::ExtractIPv4Dst(p, n, dst4)) {
-            key = VipKey::FromV4(dst4); ok = true;
-        } else if (iphelpers::ExtractIPv6Dst(p, n, dst6)) {
-            key = VipKey::FromV6(dst6); ok = true;
-        }
-        if (!ok) return;
+        if (!MakeVipKeyFromDst(p, n, key)) return;
 
         std::unique_ptr<Client>* cl_slot = nullptr;
         {
@@ -387,6 +434,15 @@ namespace ServerSide
 
             // dual-stack: v6 сокет с v6_only(false)
             sock->open(udp::v6(), ec);
+
+            {
+                boost::system::error_code ig;
+                boost::asio::socket_base::receive_buffer_size rcv(1<<20);
+                boost::asio::socket_base::send_buffer_size    snd(1<<20);
+                sock->set_option(rcv, ig);
+                sock->set_option(snd, ig);
+            }
+
             if (ec) throw 1;
             {
                 boost::asio::ip::v6_only v6only(false);

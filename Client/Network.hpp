@@ -101,6 +101,12 @@ static void add_addr_p2p(struct nl_sock* sk, int ifindex, int family,
     rtnl_addr_set_local(a, local);
     rtnl_addr_set_peer(a,  peer);
 
+    // ВАЖНО для IPv6: сразу отключаем DAD и авто-префикс-роуты
+    if (family == AF_INET6) {
+        // если библиотека поддерживает флаги — проставим их
+        rtnl_addr_set_flags(a, IFA_F_NODAD | IFA_F_NOPREFIXROUTE);
+    }
+
     err = rtnl_addr_add(sk, a, NLM_F_CREATE | NLM_F_REPLACE);
     if (err < 0) die("rtnl_addr_add", err);
 
@@ -108,6 +114,7 @@ static void add_addr_p2p(struct nl_sock* sk, int ifindex, int family,
     nl_addr_put(local);
     nl_addr_put(peer);
 }
+
 
 // --- find default GW (table=main) ---
 struct GwInfo { int ifindex; std::string gw_text; };
@@ -247,3 +254,13 @@ static void write_proc(const char* path, const char* data) {
     (void)::write(fd, data, std::strlen(data));
     ::close(fd);
 }
+
+static void write_proc_if_sysctl(const std::string& ifname, const char* key, const char* value) {
+    char path[256];
+    std::snprintf(path, sizeof(path), "/proc/sys/net/ipv6/conf/%s/%s", ifname.c_str(), key);
+    int fd = ::open(path, O_WRONLY | O_CLOEXEC);
+    if (fd < 0) return;
+    (void)::write(fd, value, std::strlen(value));
+    ::close(fd);
+}
+
