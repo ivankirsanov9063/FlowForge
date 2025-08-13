@@ -1,7 +1,8 @@
 add_executable(Client
         Client.cpp
         Network.hpp
-        ${CMAKE_SOURCE_DIR}/TUN.cpp)
+        ${CMAKE_SOURCE_DIR}/TUN.cpp
+)
 
 target_compile_features(Client PRIVATE cxx_std_23)
 

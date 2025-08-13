@@ -53,9 +53,6 @@ int main(int argc, char** argv)
             PluginWrapper::Unload(plugin);
             return 1;
         }
-
-        //std::string cmd = "/bin/bash server_network.sh '" + tun + "'";
-        //(void)std::system(cmd.c_str());
     }
 
     if (!PluginWrapper::Server_Bind(plugin, static_cast<std::uint16_t>(port)))

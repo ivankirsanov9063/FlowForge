@@ -120,8 +120,6 @@ int main(int argc, char** argv)
 
         nl_socket_free(sk);
         std::printf("Configured %s. Done.\n", tun.c_str());
-        //std::string cmd = "/bin/bash client_network.sh '" + server_ip + "' '" + tun + "'";
-        //(void)std::system(cmd.c_str());
     }
 
     if (!PluginWrapper::Client_Connect(plugin, server_ip, static_cast<std::uint16_t>(port)))
