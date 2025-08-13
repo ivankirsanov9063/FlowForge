@@ -1,6 +1,6 @@
 add_executable(Server
         Server.cpp
-        Network.hpp
+        Network.cpp
         ${CMAKE_SOURCE_DIR}/TUN.cpp
 )
 
