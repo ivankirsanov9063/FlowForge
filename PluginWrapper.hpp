@@ -3,6 +3,7 @@
 #include <string>
 #include <functional>
 #include <csignal>
+#include <cstdint>
 
 namespace PluginWrapper
 {
