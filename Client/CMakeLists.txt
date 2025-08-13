@@ -1,6 +1,7 @@
 add_executable(Client
         Client.cpp
         Network.cpp
+        ${CMAKE_SOURCE_DIR}/PluginWrapper.cpp
         ${CMAKE_SOURCE_DIR}/TUN.cpp
 )
 

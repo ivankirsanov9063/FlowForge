@@ -6,6 +6,7 @@
 #include <fcntl.h>
 #include <unistd.h>
 #include <cerrno>
+#include <iostream>
 
 static volatile sig_atomic_t working = true;
 

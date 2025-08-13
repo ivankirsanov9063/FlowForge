@@ -1,31 +1,12 @@
 // Server/Network.hpp
 #pragma once
 
-#include <array>
-#include <cstdint>
-#include <optional>
 #include <string>
-#include <vector>
-#include <iostream>
-#include <cstring>
-#include <cerrno>
-#include <fstream>
-
-#include <unistd.h>
-#include <fcntl.h>
-#include <arpa/inet.h>
-#include <net/if.h>
-
+#include <csignal>
+#include <optional>
 #include <netlink/netlink.h>
 #include <netlink/socket.h>
-#include <netlink/cache.h>
-#include <netlink/addr.h>
-#include <netlink/route/addr.h>
-#include <netlink/route/link.h>
-#include <netlink/route/route.h>
-#include <netlink/route/nexthop.h>
-
-#include <nftables/libnftables.h>
+#include <arpa/inet.h>
 
 namespace NetConfig
 {

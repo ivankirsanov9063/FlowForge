@@ -1,177 +1,151 @@
 #pragma once
 
-#include <array>
-#include <chrono>
-#include <csignal>
-#include <cstdint>
-#include <cstring>
-#include <cstdio>
-#include <fcntl.h>
-#include <functional>
-#include <iostream>
-#include <net/if.h>
-#include <netinet/in.h>
-#include <poll.h>
 #include <string>
-#include <sys/ioctl.h>
-#include <sys/socket.h>
-#include <unistd.h>
-#include <arpa/inet.h>
-#include <cerrno>
-#include <dlfcn.h>
+#include <functional>
+#include <csignal>
 
 namespace PluginWrapper
 {
+    /**
+     * @brief Тип функции плагина для подключения клиента.
+     * @param server_ip IP-адрес сервера.
+     * @param port Порт подключения.
+     * @return true при успешном подключении.
+     */
     using Client_Connect_t =
-        bool (*)(const std::string &,
-                 std::uint16_t) noexcept;
+            bool (*)(const std::string &server_ip,
+                     std::uint16_t port) noexcept;
 
+    /**
+     * @brief Тип функции плагина для отключения клиента.
+     */
     using Client_Disconnect_t =
-        void (*)(void) noexcept;
+            void (*)(void) noexcept;
 
+    /**
+     * @brief Тип функции плагина для обработки трафика клиента.
+     * @param receive_from_net Функция чтения данных из сети.
+     * @param send_to_net Функция отправки данных в сеть.
+     * @param working_flag Указатель на флаг продолжения работы.
+     * @return Код завершения работы.
+     */
     using Client_Serve_t =
-        int (*)(const std::function<ssize_t(std::uint8_t *,
-                                            std::size_t)> &,
-                const std::function<ssize_t(const std::uint8_t *,
-                                            std::size_t)> &,
-                const volatile sig_atomic_t *) noexcept;
+            int (*)(const std::function<ssize_t(std::uint8_t *buf,
+                                                std::size_t len)> &receive_from_net,
+    const std::function<ssize_t(const std::uint8_t *buf,
+                                std::size_t len)> &send_to_net,
+    const volatile sig_atomic_t *working_flag) noexcept;
 
+    /**
+     * @brief Тип функции плагина для привязки сервера к порту.
+     * @param port Порт привязки.
+     * @return true при успехе.
+     */
     using Server_Bind_t =
-        bool (*)(std::uint16_t) noexcept;
+            bool (*)(std::uint16_t port) noexcept;
 
+    /**
+     * @brief Тип функции плагина для обработки трафика сервера.
+     * @param receive_from_net Функция чтения данных из сети.
+     * @param send_to_net Функция отправки данных в сеть.
+     * @param working_flag Указатель на флаг продолжения работы.
+     * @return Код завершения работы.
+     */
     using Server_Serve_t =
-        int (*)(const std::function<ssize_t(std::uint8_t *,
-                                            std::size_t)> &,
-                const std::function<ssize_t(const std::uint8_t *,
-                                            std::size_t)> &,
-                const volatile sig_atomic_t *) noexcept;
+            int (*)(const std::function<ssize_t(std::uint8_t *buf,
+                                                std::size_t len)> &receive_from_net,
+    const std::function<ssize_t(const std::uint8_t *buf,
+                                std::size_t len)> &send_to_net,
+    const volatile sig_atomic_t *working_flag) noexcept;
 
+    /**
+     * @brief Структура для хранения загруженного плагина и указателей на его функции.
+     */
     struct Plugin
     {
-        void *             handle            = nullptr;
-        Client_Connect_t    Client_Connect    = nullptr;
-        Client_Disconnect_t Client_Disconnect = nullptr;
-        Client_Serve_t      Client_Serve      = nullptr;
-        Server_Bind_t       Server_Bind       = nullptr;
-        Server_Serve_t      Server_Serve      = nullptr;
+        void *             handle            = nullptr; ///< Дескриптор загруженной библиотеки.
+        Client_Connect_t    Client_Connect    = nullptr; ///< Указатель на функцию Client_Connect.
+        Client_Disconnect_t Client_Disconnect = nullptr; ///< Указатель на функцию Client_Disconnect.
+        Client_Serve_t      Client_Serve      = nullptr; ///< Указатель на функцию Client_Serve.
+        Server_Bind_t       Server_Bind       = nullptr; ///< Указатель на функцию Server_Bind.
+        Server_Serve_t      Server_Serve      = nullptr; ///< Указатель на функцию Server_Serve.
 
-        Plugin()
-            : handle(nullptr),
-              Client_Connect(nullptr),
-              Client_Disconnect(nullptr),
-              Client_Serve(nullptr),
-              Server_Bind(nullptr),
-              Server_Serve(nullptr)
-        {}
+        Plugin() = default;
     };
 
-    static void* Sym(void       *h,
-        const char *name)
-    {
-        void *p = dlsym(h, name);
-        if (!p)
-        {
-            std::cerr << "dlsym failed: " << name
-                      << " : " << dlerror() << "\n";
-        }
-        return p;
-    }
+    /**
+     * @brief Получает символ из динамической библиотеки.
+     * @param h Дескриптор открытой библиотеки.
+     * @param name Имя экспортируемого символа.
+     * @return Указатель на символ или nullptr.
+     */
+    static void* Sym(void *h, const char *name);
 
-    Plugin Load(const std::string &path)
-    {
-        Plugin plugin;
-        plugin.handle = dlopen(path.c_str(),
-                               RTLD_NOW | RTLD_LOCAL);
-        if (!plugin.handle)
-        {
-            std::cerr << "dlopen failed: " << dlerror() << "\n";
-            return plugin;
-        }
+    /**
+     * @brief Загружает плагин и инициализирует его функции.
+     * @param path Путь к файлу плагина (.so).
+     * @return Структура Plugin с загруженными функциями.
+     */
+    Plugin Load(const std::string &path);
 
-        plugin.Client_Connect =
-            reinterpret_cast<Client_Connect_t>(
-                Sym(plugin.handle, "Client_Connect"));
+    /**
+     * @brief Выгружает плагин.
+     * @param plugin Структура плагина.
+     */
+    void Unload(const Plugin &plugin);
 
-        plugin.Client_Disconnect =
-            reinterpret_cast<Client_Disconnect_t>(
-                Sym(plugin.handle, "Client_Disconnect"));
+    /**
+     * @brief Вызывает функцию Client_Connect плагина.
+     * @param plugin Загруженный плагин.
+     * @param server_ip IP-адрес сервера.
+     * @param port Порт подключения.
+     * @return true при успешном подключении.
+     */
+    bool Client_Connect(const Plugin &plugin,
+                        const std::string &server_ip,
+                        std::uint16_t port) noexcept;
 
-        plugin.Client_Serve =
-            reinterpret_cast<Client_Serve_t>(
-                Sym(plugin.handle, "Client_Serve"));
+    /**
+     * @brief Вызывает функцию Client_Disconnect плагина.
+     * @param plugin Загруженный плагин.
+     */
+    void Client_Disconnect(const Plugin &plugin) noexcept;
 
-        plugin.Server_Bind =
-            reinterpret_cast<Server_Bind_t>(
-                Sym(plugin.handle, "Server_Bind"));
-
-        plugin.Server_Serve =
-            reinterpret_cast<Server_Serve_t>(
-                Sym(plugin.handle, "Server_Serve"));
-
-        const bool fine =
-            plugin.Client_Connect &&
-            plugin.Client_Disconnect &&
-            plugin.Client_Serve &&
-            plugin.Server_Bind &&
-            plugin.Server_Serve;
-
-        if (!fine)
-        {
-            std::cerr << "Plugin missing required symbols\n";
-            dlclose(plugin.handle);
-            plugin.handle = nullptr;
-        }
-
-        return plugin;
-    }
-
-    void Unload(const Plugin &plugin)
-    {
-        if (plugin.handle)
-        {
-            dlclose(plugin.handle);
-        }
-    }
-
-    bool Client_Connect(const Plugin     &plugin,
-                   const std::string &server_ip,
-                   std::uint16_t      port) noexcept
-    {
-        return plugin.Client_Connect(server_ip, port);
-    }
-
-    void Client_Disconnect(const Plugin &plugin) noexcept
-    {
-        plugin.Client_Disconnect();
-    }
-
+    /**
+     * @brief Вызывает функцию Client_Serve плагина.
+     * @param plugin Загруженный плагин.
+     * @param receive_from_net Функция чтения данных из сети.
+     * @param send_to_net Функция отправки данных в сеть.
+     * @param working_flag Указатель на флаг продолжения работы.
+     * @return Код завершения работы.
+     */
     int Client_Serve(const Plugin &plugin,
-                 const std::function<ssize_t(std::uint8_t *,
-                                             std::size_t)> &receive_from_net,
-                 const std::function<ssize_t(const std::uint8_t *,
-                                             std::size_t)> &send_to_net,
-                 const volatile sig_atomic_t *working_flag) noexcept
-    {
-        return plugin.Client_Serve(receive_from_net,
-                                   send_to_net,
-                                   working_flag);
-    }
+                     const std::function<ssize_t(std::uint8_t *buf,
+                                                 std::size_t len)> &receive_from_net,
+    const std::function<ssize_t(const std::uint8_t *buf,
+                                std::size_t len)> &send_to_net,
+    const volatile sig_atomic_t *working_flag) noexcept;
 
-    bool Server_Bind(const Plugin &plugin,
-                std::uint16_t port) noexcept
-    {
-        return plugin.Server_Bind(port);
-    }
+    /**
+     * @brief Вызывает функцию Server_Bind плагина.
+     * @param plugin Загруженный плагин.
+     * @param port Порт привязки.
+     * @return true при успехе.
+     */
+    bool Server_Bind(const Plugin &plugin, std::uint16_t port) noexcept;
 
+    /**
+     * @brief Вызывает функцию Server_Serve плагина.
+     * @param plugin Загруженный плагин.
+     * @param receive_from_net Функция чтения данных из сети.
+     * @param send_to_net Функция отправки данных в сеть.
+     * @param working_flag Указатель на флаг продолжения работы.
+     * @return Код завершения работы.
+     */
     int Server_Serve(const Plugin &plugin,
-                 const std::function<ssize_t(std::uint8_t *,
-                                             std::size_t)> &receive_from_net,
-                 const std::function<ssize_t(const std::uint8_t *,
-                                             std::size_t)> &send_to_net,
-                 const volatile sig_atomic_t *working_flag) noexcept
-    {
-        return plugin.Server_Serve(receive_from_net,
-                                   send_to_net,
-                                   working_flag);
-    }
+                     const std::function<ssize_t(std::uint8_t *buf,
+                                                 std::size_t len)> &receive_from_net,
+    const std::function<ssize_t(const std::uint8_t *buf,
+                                std::size_t len)> &send_to_net,
+    const volatile sig_atomic_t *working_flag) noexcept;
 }

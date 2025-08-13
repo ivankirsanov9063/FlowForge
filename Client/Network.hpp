@@ -1,26 +1,11 @@
 #pragma once
 
-#include <arpa/inet.h>
-#include <errno.h>
-#include <fcntl.h>
-#include <netinet/in.h>
-#include <sys/ioctl.h>
-#include <sys/socket.h>
-#include <unistd.h>
-#include <net/if.h>
-
-#include <netlink/netlink.h>
-#include <netlink/addr.h>
-#include <netlink/cache.h>
-#include <netlink/route/addr.h>
-#include <netlink/route/link.h>
-#include <netlink/route/route.h>
-
-#include <cstdio>
-#include <cstring>
 #include <string>
+#include <csignal>
 #include <optional>
-#include <iostream>
+#include <netlink/netlink.h>
+#include <netlink/socket.h>
+#include <arpa/inet.h>
 
 /**
  * @brief Завершает программу с сообщением об ошибке Netlink.
