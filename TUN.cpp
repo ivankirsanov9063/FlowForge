@@ -6,7 +6,6 @@
 
 #ifdef __linux__
 
-#include <fcntl.h>
 #include <linux/if.h>
 #include <linux/if_tun.h>
 #include <sys/ioctl.h>
@@ -42,6 +41,7 @@ int TunAlloc(const std::string &interface_name)
 #define _WIN32_WINNT 0x0601
 #endif
 
+#include <fcntl.h>
 #include <windows.h>
 #include <winternl.h>
 #include <winioctl.h>
@@ -49,6 +49,7 @@ int TunAlloc(const std::string &interface_name)
 #include <ws2tcpip.h>
 #include <vector>
 #include <atomic>
+#include <fcntl.h>
 #include <thread>
 #include <mutex>
 
@@ -157,6 +158,13 @@ static void rx_loop()
 
             DWORD written = 0;
             BOOL ok = WriteFile(g_ctx.hPipeServer, pkt, pktSize, &written, nullptr);
+            if (!ok) {
+                std::fprintf(stderr, "[E] rx_loop: WriteFile(pipe) err=%lu\n", GetLastError());
+                return;
+            } else {
+                std::fprintf(stderr, "[I] rx_loop: wrote %lu bytes\n", written);
+            }
+
             pWintunReleaseReceivePacket(g_ctx.session, pkt);
 
             if (!ok)
@@ -177,11 +185,12 @@ static void tx_loop()
     {
         DWORD rd = 0;
         BOOL ok = ReadFile(g_ctx.hPipeServer, buf.data(), (DWORD)buf.size(), &rd, nullptr);
-        if (!ok)
-        {
-            // разрыв канала — завершаемся
+        if (!ok) {
+            std::fprintf(stderr, "[E] tx_loop: ReadFile(pipe) err=%lu\n", GetLastError());
             return;
         }
+        if (rd) std::fprintf(stderr, "[I] tx_loop: read %lu bytes\n", rd);
+
         if (rd == 0) continue;
 
         BYTE* out = pWintunAllocateSendPacket(g_ctx.session, rd);
@@ -202,13 +211,13 @@ static bool make_duplex_pipe(const std::wstring& name, HANDLE& hServer, HANDLE& 
     std::wstring full = L"\\\\.\\pipe\\wintun_" + name;
 
     hServer = CreateNamedPipeW(
-        full.c_str(),
-        PIPE_ACCESS_DUPLEX,                                    // двунаправленный
-        PIPE_TYPE_MESSAGE | PIPE_READMODE_MESSAGE | PIPE_WAIT, // сохраняем границы сообщений
-        1,                                                     // один экземпляр
-        1 << 20,                                               // out buf
-        1 << 20,                                               // in buf
-        0, nullptr);
+    full.c_str(),
+    PIPE_ACCESS_DUPLEX,
+    PIPE_TYPE_BYTE | PIPE_READMODE_BYTE | PIPE_WAIT, // ← СТАЛО
+    1,
+    1 << 20,
+    1 << 20,
+    0, nullptr);
     if (hServer == INVALID_HANDLE_VALUE)
         return false;
 
@@ -232,7 +241,7 @@ static bool make_duplex_pipe(const std::wstring& name, HANDLE& hServer, HANDLE& 
     }
 
     // Возвращаем fd для клиента
-    int fd = _open_osfhandle((intptr_t)hClient, 0);
+    int fd = _open_osfhandle((intptr_t)hClient, _O_BINARY);
     if (fd < 0)
     {
         CloseHandle(hClient);
@@ -266,11 +275,12 @@ int TunAlloc(const std::string& interface_name)
         }
     }
 
-    // Стартуем сессию: ёмкость очереди пакетов (рекомендуемое 0x4000)
-    WINTUN_SESSION_HANDLE session = pWintunStartSession(adapter, 0x4000);
+    // Стартуем сессию: ёмкость очереди пакетов (рекомендуемое 0x400000)
+    WINTUN_SESSION_HANDLE session = pWintunStartSession(adapter, 0x400000);
     if (!session)
     {
-        std::cerr << "Wintun: StartSession failed\n";
+        DWORD e = GetLastError();
+        std::fprintf(stderr, "WintunStartSession failed, err=%lu\n", e);
         pWintunCloseAdapter(adapter);
         return -1;
     }

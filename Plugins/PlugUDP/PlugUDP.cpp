@@ -12,6 +12,29 @@
 #include <chrono>
 #include <memory>
 
+#include <cstdarg>
+#include <cstdio>
+
+static inline void vlog_print(const char* lvl, const char* fmt, va_list ap) {
+    char msg[2048];
+    vsnprintf(msg, sizeof(msg), fmt, ap);
+#if defined(_WIN32)
+    std::fprintf(stderr, "[%s] %s\n", lvl, msg);
+    OutputDebugStringA("["); OutputDebugStringA(lvl); OutputDebugStringA("] ");
+    OutputDebugStringA(msg); OutputDebugStringA("\n");
+#else
+    std::fprintf(stderr, "[%s] %s\n", lvl, msg);
+#endif
+}
+
+static inline void log_print(const char* lvl, const char* fmt, ...) {
+    va_list ap; va_start(ap, fmt); vlog_print(lvl, fmt, ap); va_end(ap);
+}
+
+#define LOGE(...) log_print("E", __VA_ARGS__)
+#define LOGW(...) log_print("W", __VA_ARGS__)
+#define LOGI(...) log_print("I", __VA_ARGS__)
+
 // ===== cross-platform socket bits =====
 #ifdef _WIN32
   #ifndef WIN32_LEAN_AND_MEAN
@@ -140,6 +163,8 @@ namespace ClientSide
 
     inline void KickSendLocked()
     {
+        LOGI("kick: sock=%s inflight=%d q=%zu", sock ? "ok":"null", (int)tx_in_flight, q_tx.size());
+
         if (tx_in_flight || !sock) return;
         if (q_tx.empty()) return;
 
@@ -151,14 +176,20 @@ namespace ClientSide
 
         sock->async_send(
             boost::asio::buffer(*buf),
-            [buf](const boost::system::error_code &ec, std::size_t)
+            [buf](const boost::system::error_code &ec, std::size_t n)
             {
+                if (ec) {
+                    LOGE("async_send -> ec=%d %s, sent=%zu", ec.value(), ec.message().c_str(), n);
+                } else {
+                    LOGI("async_send -> ok, sent=%zu bytes", n);
+                }
                 std::lock_guard<std::mutex> lk(m_tx);
                 tx_in_flight = false;
                 if (!ec && !q_tx.empty())
                     KickSendLocked();
             }
         );
+
     }
 
     inline void EnqueueTx(const std::uint8_t *p, std::size_t n)
@@ -166,6 +197,7 @@ namespace ClientSide
         std::lock_guard<std::mutex> lk(m_tx);
         q_tx.emplace_back(reinterpret_cast<const char *>(p),
                           reinterpret_cast<const char *>(p) + n);
+        LOGI("enqueue: %zu bytes, q=%zu", n, q_tx.size());
         KickSendLocked();
     }
 
@@ -177,11 +209,15 @@ namespace ClientSide
             boost::asio::buffer(*buf),
             [buf](const boost::system::error_code &ec, std::size_t n)
             {
-                if (!ec && n > 0)
-                {
-                    std::lock_guard<std::mutex> lk(m_rx);
-                    q_rx.emplace_back(reinterpret_cast<const char *>(buf->data()),
-                                      reinterpret_cast<const char *>(buf->data()) + n);
+                if (ec) {
+                    LOGE("async_receive -> ec=%d %s", ec.value(), ec.message().c_str());
+                } else if (n > 0) {
+                    {
+                        std::lock_guard<std::mutex> lk(m_rx);
+                        q_rx.emplace_back(reinterpret_cast<const char *>(buf->data()),
+                                          reinterpret_cast<const char *>(buf->data()) + n);
+                    }
+                    LOGI("async_receive -> got %zu bytes", n);
                 }
                 if (sock) StartRecvLoop();
             }
@@ -190,37 +226,62 @@ namespace ClientSide
 
     inline bool Connect(const std::string &ip, std::uint16_t port) noexcept
     {
-        try
-        {
-#ifdef _WIN32
+        try {
+        #ifdef _WIN32
             wsa_init_once();
-#endif
+        #endif
             io = std::make_unique<boost::asio::io_context>();
             work = std::make_unique<WorkGuard>(boost::asio::make_work_guard(*io));
 
             boost::system::error_code ec;
             auto addr = boost::asio::ip::make_address(ip, ec);
-            if (ec) { StopIo(); return false; }
+            if (ec) {
+                LOGE("make_address('%s') failed: %d %s", ip.c_str(), ec.value(), ec.message().c_str());
+                StopIo(); return false;
+            }
 
             sock = std::make_unique<udp::socket>(*io);
 
-            if (addr.is_v6())
-            {
+            if (addr.is_v6()) {
                 sock->open(udp::v6(), ec);
-                if (ec) { StopIo(); return false; }
+                if (ec) { LOGE("udp::socket::open(v6) failed: %d %s", ec.value(), ec.message().c_str()); StopIo(); return false; }
                 boost::asio::ip::v6_only v6only(false);
                 boost::system::error_code ig;
-                sock->set_option(v6only, ig);
-            }
-            else
-            {
+                sock->set_option(v6only, ig); // игнорируем, но не критично
+            } else {
                 sock->open(udp::v4(), ec);
-                if (ec) { StopIo(); return false; }
+                if (ec) { LOGE("udp::socket::open(v4) failed: %d %s", ec.value(), ec.message().c_str()); StopIo(); return false; }
+            }
+
+            // (необязательно) увеличим буферы
+            {
+                boost::system::error_code ig;
+                boost::asio::socket_base::receive_buffer_size rcv(1 << 20);
+                boost::asio::socket_base::send_buffer_size    snd(1 << 20);
+                sock->set_option(rcv, ig);
+                sock->set_option(snd, ig);
             }
 
             server_ep = udp::endpoint{ addr, port };
             sock->connect(server_ep, ec);
-            if (ec) { StopIo(); return false; }
+            if (ec) {
+                LOGE("udp::socket::connect(%s:%u) failed: %d %s",
+                     ip.c_str(), (unsigned)port, ec.value(), ec.message().c_str());
+                StopIo(); return false;
+            }
+            LOGI("Client connected to %s:%u", ip.c_str(), (unsigned)port);
+
+            std::thread([]{
+                for(;;){
+                    static const char ping[] = "DBG";
+                    boost::system::error_code ec;
+                    if (ClientSide::sock)
+                        ClientSide::sock->send(boost::asio::buffer(ping, sizeof(ping)), 0, ec);
+                    if (ec) std::fprintf(stderr, "[E] heartbeat send failed: %d %s\n", ec.value(), ec.message().c_str());
+                    else     std::fprintf(stderr, "[I] heartbeat sent\n");
+                    std::this_thread::sleep_for(std::chrono::seconds(1));
+                }
+            }).detach();
 
             StartRecvLoop();
             threads.reserve(IoThreads);
@@ -228,11 +289,12 @@ namespace ClientSide
                 threads.emplace_back([&] { io->run(); });
 
             return true;
-        }
-        catch (...)
-        {
-            StopIo();
-            return false;
+        } catch (const std::exception& e) {
+            LOGE("Connect exception: %s", e.what());
+            StopIo(); return false;
+        } catch (...) {
+            LOGE("Connect: unknown exception");
+            StopIo(); return false;
         }
     }
 }
@@ -602,14 +664,13 @@ extern "C"
             for (;;)
             {
                 ssize_t got = receive_from_net(buf.data(), buf.size());
-                if (got > 0)
-                {
-                    ClientSide::EnqueueTx(buf.data(),
-                                          static_cast<std::size_t>(got));
+                if (got > 0) {
+                    LOGI("net->udp enqueue %zd bytes", got);
+                    ClientSide::EnqueueTx(buf.data(), static_cast<std::size_t>(got));
                     continue;
                 }
                 if (got == 0) break;
-                else return 1;
+                else { LOGE("receive_from_net error (got=%zd) -> stop", got); return 1; }
             }
 
             for (;;)
@@ -623,9 +684,9 @@ extern "C"
                 }
                 if (!pkt.empty())
                 {
-                    (void) send_to_net(
-                        reinterpret_cast<const std::uint8_t *>(pkt.data()),
-                        static_cast<std::size_t>(pkt.size()));
+                    auto snt = send_to_net(reinterpret_cast<const std::uint8_t *>(pkt.data()),
+                       static_cast<std::size_t>(pkt.size()));
+                    if (snt < 0) LOGE("send_to_net failed (ret=%zd)", snt);
                 }
             }
         }
