@@ -522,65 +522,30 @@ void add_host_route_via_gw_win(int family,
     (void)CreateIpForwardEntry2(&fr);
 }
 
-void add_split_default_onlink_win(const std::string& ifname) {
-    NET_LUID luid{}; if (!alias_to_luid(ifname, &luid)) return;
-
-    for (auto p : { std::pair<const char*,UINT8>{"0.0.0.0",1},
-                    std::pair<const char*,UINT8>{"128.0.0.0",1} })
-    {
-        MIB_IPFORWARD_ROW2 fr{}; InitializeIpForwardEntry(&fr);
-        fr.InterfaceLuid = luid;
-        fr.DestinationPrefix.Prefix.si_family = AF_INET;
-        InetPtonA(AF_INET, p.first, &fr.DestinationPrefix.Prefix.Ipv4.sin_addr);
-        fr.DestinationPrefix.PrefixLength = p.second;
-
-        // ВАЖНО: on-link (без шлюза)
-        zero_sockaddr(AF_INET, &fr.NextHop);
-
-        fr.Metric   = 5;
-        fr.Protocol = MIB_IPPROTO_NETMGMT;
-        (void)CreateIpForwardEntry2(&fr);
-    }
-}
-
-void set_interface_metric_win(const std::string &ifname, int family, unsigned metric)
+void replace_default_via_dev_win(int family, const std::string &ifname)
 {
-    NET_LUID luid{}; if (!alias_to_luid(ifname, &luid)) return;
-
-    MIB_IPINTERFACE_ROW ipif{};
-    InitializeIpInterfaceEntry(&ipif);
-    ipif.Family = (ADDRESS_FAMILY)family;
-    ipif.InterfaceLuid = luid;
-
-    if (GetIpInterfaceEntry(&ipif) != NO_ERROR) return;
-    ipif.UseAutomaticMetric = FALSE;
-    ipif.Metric = metric; // сделаем 1
-    (void)SetIpInterfaceEntry(&ipif);
-}
-
-void replace_default_via_dev_win(int family, const std::string &ifname, const std::string &peer_str)
-{
-    NET_LUID luid{}; if (!alias_to_luid(ifname, &luid)) return;
+    NET_LUID luid{};
+    if (!alias_to_luid(ifname, &luid)) return;
 
     ULONG metric = 5;
     if (auto cur = get_default_metric(family))
         metric = (ULONG)std::max(0, *cur - 10);
 
-    MIB_IPFORWARD_ROW2 fr{}; InitializeIpForwardEntry(&fr);
+    MIB_IPFORWARD_ROW2 fr{};
+    InitializeIpForwardEntry(&fr);
     fr.InterfaceLuid = luid;
-
     fr.DestinationPrefix.Prefix.si_family = (ADDRESS_FAMILY)family;
+    // 0/0
     if (family == AF_INET) fr.DestinationPrefix.Prefix.Ipv4.sin_family = AF_INET;
     else                   fr.DestinationPrefix.Prefix.Ipv6.sin6_family = AF_INET6;
     fr.DestinationPrefix.PrefixLength = 0;
 
-    // ВАЖНО: дефолт через peer (а не on-link)
-    if (!parse_ip(family, peer_str, &fr.NextHop)) return;
+    // on-link default (NextHop = 0)
+    zero_sockaddr(family, &fr.NextHop);
 
-    fr.Metric   = metric;
+    fr.Metric = metric;
     fr.Protocol = MIB_IPPROTO_NETMGMT;
     (void)CreateIpForwardEntry2(&fr);
 }
-
 
 #endif // _WIN32 / __linux__

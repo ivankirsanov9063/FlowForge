@@ -46,9 +46,7 @@ std::optional<int> get_default_metric(int family);
   void add_host_route_via_gw_win(int family,
                                  const std::string &host_ip,
                                  const GwInfo &gw);
-  void add_split_default_onlink_win(const std::string& ifname);
-  void set_interface_metric_win(const std::string &ifname, int family, unsigned metric);
-  void replace_default_via_dev_win(int family, const std::string &ifname, const std::string &peer_str);
+  void replace_default_via_dev_win(int family, const std::string &ifname);
 
   // Заглушки (на Windows нет /proc/sys)
   inline void write_proc(const char*, const char*) {}

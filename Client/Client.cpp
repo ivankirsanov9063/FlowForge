@@ -37,14 +37,6 @@ int main(int argc, char **argv)
     std::string plugin_path = "./libPlugUDP.so";
 #endif
 
-#ifdef _WIN32
-    WSADATA wsa;
-    if (WSAStartup(MAKEWORD(2,2), &wsa) != 0) {
-        std::fprintf(stderr, "WSAStartup failed: %d\n", WSAGetLastError());
-        return 1;
-    }
-#endif
-
 
     // ... (парсинг аргументов как у тебя)
 
@@ -121,16 +113,13 @@ int main(int argc, char **argv)
             add_addr_p2p_win(tun, AF_INET6, "fd00:dead:beef::2", 128, "fd00:dead:beef::1");
         } catch (...) {}
 
-        set_interface_metric_win(tun, AF_INET,  1);
-        set_interface_metric_win(tun, AF_INET6, 1);
-
         auto gw4 = find_default_gw_win(AF_INET);
         auto gw6 = find_default_gw_win(AF_INET6);
         if (is_ipv6_literal(server_ip)) { if (gw6) add_host_route_via_gw_win(AF_INET6, server_ip, *gw6); }
         else                             { if (gw4) add_host_route_via_gw_win(AF_INET,  server_ip, *gw4); }
 
-        replace_default_via_dev_win(AF_INET,  tun, "10.8.0.1");
-        replace_default_via_dev_win(AF_INET6, tun, "fd00:dead:beef::1");
+        replace_default_via_dev_win(AF_INET,  tun);
+        replace_default_via_dev_win(AF_INET6, tun);
 
         std::printf("Configured %s (Windows). Done.\n", tun.c_str());
     }
@@ -174,14 +163,7 @@ int main(int argc, char **argv)
     auto receive_from_net = [tun_descriptor](std::uint8_t *buffer, std::size_t size) -> ssize_t
     {
         int rc = _read(tun_descriptor, buffer, (unsigned)size);
-        if (rc < 0) {
-            int e = errno; // или _get_errno(&e);
-            // Выведите код ошибки один раз на N срабатываний, чтобы не засорять:
-            std::fprintf(stderr, "[E] _read(tun_fd) failed, errno=%d\n", e);
-            // Для EAGAIN/EWOULDBLOCK вернём 0 (пусто), иначе настоящую ошибку:
-            if (e == EAGAIN || e == EWOULDBLOCK) return 0;
-            return -1; // <-- теперь Client_Serve это увидит и залогирует
-        }
+        if (rc < 0) return 0; // нет неблокирующего режима — возвращаем 0 при пустом буфере
         return rc;
     };
 #endif
@@ -195,8 +177,5 @@ int main(int argc, char **argv)
     _close(tun_descriptor);
 #endif
     PluginWrapper::Unload(plugin);
-#ifdef _WIN32
-    WSACleanup();
-#endif
     return rc;
 }
