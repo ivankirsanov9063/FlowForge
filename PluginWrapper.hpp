@@ -4,6 +4,14 @@
 #include <functional>
 #include <csignal>
 #include <cstdint>
+#include <cstddef>
+
+#ifdef _WIN32
+
+#include <BaseTsd.h>
+#define ssize_t SSIZE_T
+
+#endif
 
 namespace PluginWrapper
 {

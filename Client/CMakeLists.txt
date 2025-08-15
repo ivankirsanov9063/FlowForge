@@ -1,6 +1,6 @@
 add_executable(Client
         Client.cpp
-        Network.cpp
+        ${CMAKE_SYSTEM_NAME}/Network.cpp
         ${CMAKE_SOURCE_DIR}/PluginWrapper.cpp
         ${CMAKE_SOURCE_DIR}/TUN.cpp
 )
@@ -9,9 +9,17 @@ target_compile_features(Client PRIVATE cxx_std_23)
 
 target_include_directories(Client PRIVATE ${CMAKE_SOURCE_DIR})
 
-find_package(PkgConfig REQUIRED)
-pkg_check_modules(LIBNL3 REQUIRED libnl-3.0 libnl-route-3.0)
-target_include_directories(Client PRIVATE ${LIBNL3_INCLUDE_DIRS})
-target_link_libraries(Client PRIVATE ${LIBNL3_LIBRARIES})
+if (CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    find_package(PkgConfig REQUIRED)
+    pkg_check_modules(LIBNL3 REQUIRED libnl-3.0 libnl-route-3.0)
+    target_include_directories(Client PRIVATE ${LIBNL3_INCLUDE_DIRS})
+    target_link_libraries(Client PRIVATE ${LIBNL3_LIBRARIES})
+endif()
+
+if (CMAKE_SYSTEM_NAME STREQUAL "Windows")
+    target_link_libraries(Client PRIVATE Ws2_32 Iphlpapi)
+endif()
+
+#target_compile_options(Client PRIVATE /showIncludes)
 
 install(TARGETS Client RUNTIME DESTINATION bin)

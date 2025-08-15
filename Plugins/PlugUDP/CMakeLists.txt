@@ -11,4 +11,10 @@ add_library(PlugUDP SHARED PlugUDP.cpp)
 
 target_include_directories(PlugUDP PUBLIC ${CMAKE_SOURCE_DIR})
 
+if (CMAKE_SYSTEM_NAME STREQUAL "Windows")
+    find_package(Boost 1.70 REQUIRED COMPONENTS system)
+    target_include_directories(PlugUDP PUBLIC ${Boost_INCLUDE_DIRS})
+    target_link_libraries(PlugUDP PRIVATE Boost::system)
+endif()
+
 set_target_properties(PlugUDP PROPERTIES OUTPUT_NAME PlugUDP)

@@ -36,13 +36,6 @@ void warn(const char *where, int err)
 bool is_ipv6_literal(const std::string &s)
 { return s.find(':') != std::string::npos; }
 
-std::string strip_brackets(std::string s)
-{
-    if (!s.empty() && s.front() == '[' && s.back() == ']')
-    { return s.substr(1, s.size() - 2); }
-    return s;
-}
-
 // --- ioctl helpers ---
 int if_set_up(const std::string &ifname)
 {
@@ -304,4 +297,76 @@ void write_proc_if_sysctl(const std::string &ifname,
     if (fd < 0) return;
     (void) ::write(fd, value, std::strlen(value));
     ::close(fd);
+}
+
+int ConfigureNetwork(const std::string& tun, const std::string& server_ip)
+{
+    int ifindex = (int) if_nametoindex(tun.c_str());
+    if (ifindex == 0)
+    {
+        std::fprintf(stderr, "Interface %s not found.\n",
+                     tun.c_str());
+        return 1;
+    }
+
+    if (int rc = if_set_up(tun); rc != 0)
+    {
+        std::fprintf(stderr, "if_set_up(%s): %s\n",
+                     tun.c_str(), std::strerror(-rc));
+        return 1;
+    }
+
+    if (int rc = if_set_mtu(tun, 1400); rc != 0)
+    {
+        std::fprintf(stderr, "if_set_mtu(%s): %s (continue)\n",
+                     tun.c_str(), std::strerror(-rc));
+    }
+
+    write_proc_if_sysctl(tun, "accept_ra",     "0\n");
+    write_proc_if_sysctl(tun, "autoconf",      "0\n");
+    write_proc_if_sysctl(tun, "disable_ipv6",  "0\n");
+
+    nl_sock *sk = nl_socket_alloc();
+    if (!sk)
+    {
+        std::fprintf(stderr, "nl_socket_alloc failed\n");
+        return 1;
+    }
+
+    int err = nl_connect(sk, NETLINK_ROUTE);
+    if (err < 0) die("nl_connect", err);
+
+    flush_addrs(sk, ifindex, AF_INET);
+    flush_addrs(sk, ifindex, AF_INET6);
+
+    add_addr_p2p(sk, ifindex, AF_INET,
+                 "10.8.0.2", 32, "10.8.0.1");
+
+    try {
+        add_addr_p2p(sk, ifindex, AF_INET6,
+                     "fd00:dead:beef::2", 128,
+                     "fd00:dead:beef::1");
+    }
+    catch (...) { /* ignore */ }
+
+    auto gw4 = find_default_gw(sk, AF_INET);
+    auto gw6 = find_default_gw(sk, AF_INET6);
+
+    if (is_ipv6_literal(server_ip))
+    {
+        if (gw6) add_host_route_via_gw(sk, AF_INET6, server_ip, *gw6);
+    }
+    else
+    {
+        if (gw4) add_host_route_via_gw(sk, AF_INET, server_ip, *gw4);
+    }
+
+    replace_default_via_dev(sk, AF_INET,  ifindex);
+    replace_default_via_dev(sk, AF_INET6, ifindex);
+
+    write_proc("/proc/sys/net/ipv6/conf/all/forwarding", "1\n");
+
+    nl_socket_free(sk);
+    std::printf("Configured %s. Done.\n", tun.c_str());
+    return 0;
 }

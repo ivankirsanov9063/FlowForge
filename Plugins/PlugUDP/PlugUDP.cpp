@@ -4,7 +4,7 @@
 
 #include <cstring>
 #include <deque>
-#include <arpa/inet.h>
+//#include <arpa/inet.h>
 
 using boost::asio::ip::udp;
 
@@ -653,109 +653,106 @@ namespace ServerSide
 }
 
 // ===================== C API (extern "C") =====================
-extern "C"
+// ===== Client ABI =====
+PLUGIN_API void Client_Disconnect() noexcept
+{ ClientSide::StopIo(); }
+
+PLUGIN_API bool Client_Connect(const std::string  &server_ip,
+               std::uint16_t       port) noexcept
 {
-    // ===== Client ABI =====
-    void Client_Disconnect() noexcept
-    { ClientSide::StopIo(); }
+    Client_Disconnect();
+    return ClientSide::Connect(server_ip, port);
+}
 
-    bool Client_Connect(const std::string  &server_ip,
-                   std::uint16_t       port) noexcept
+PLUGIN_API int Client_Serve(
+    const std::function<ssize_t(std::uint8_t *, std::size_t)> &receive_from_net,
+    const std::function<ssize_t(const std::uint8_t *, std::size_t)> &send_to_net,
+    const volatile sig_atomic_t *working_flag) noexcept
+{
+    if (!ClientSide::sock) return 1;
+
+    std::array<std::uint8_t, ClientSide::BufCap> buf{};
+
+    while (*working_flag)
     {
-        Client_Disconnect();
-        return ClientSide::Connect(server_ip, port);
-    }
-
-    int Client_Serve(
-        const std::function<ssize_t(std::uint8_t *, std::size_t)> &receive_from_net,
-        const std::function<ssize_t(const std::uint8_t *, std::size_t)> &send_to_net,
-        const volatile sig_atomic_t *working_flag) noexcept
-    {
-        if (!ClientSide::sock) return 1;
-
-        std::array<std::uint8_t, ClientSide::BufCap> buf{};
-
-        while (*working_flag)
+        for (;;)
         {
-            for (;;)
+            ssize_t got = receive_from_net(buf.data(), buf.size());
+            if (got > 0)
             {
-                ssize_t got = receive_from_net(buf.data(), buf.size());
-                if (got > 0)
-                {
-                    ClientSide::EnqueueTx(buf.data(),
-                                          static_cast<std::size_t>(got));
-                    continue;
-                }
-                if (got == 0) break;
-                else return 1;
+                ClientSide::EnqueueTx(buf.data(),
+                                      static_cast<std::size_t>(got));
+                continue;
             }
+            if (got == 0) break;
+            else return 1;
+        }
 
-            for (;;)
+        for (;;)
+        {
+            std::string pkt;
             {
-                std::string pkt;
-                {
-                    std::lock_guard<std::mutex> lk(ClientSide::m_rx);
-                    if (ClientSide::q_rx.empty()) break;
-                    pkt = std::move(ClientSide::q_rx.front());
-                    ClientSide::q_rx.pop_front();
-                }
-                if (!pkt.empty())
-                {
-                    (void) send_to_net(
-                        reinterpret_cast<const std::uint8_t *>(pkt.data()),
-                        static_cast<std::size_t>(pkt.size()));
-                }
+                std::lock_guard<std::mutex> lk(ClientSide::m_rx);
+                if (ClientSide::q_rx.empty()) break;
+                pkt = std::move(ClientSide::q_rx.front());
+                ClientSide::q_rx.pop_front();
+            }
+            if (!pkt.empty())
+            {
+                (void) send_to_net(
+                    reinterpret_cast<const std::uint8_t *>(pkt.data()),
+                    static_cast<std::size_t>(pkt.size()));
             }
         }
-        return 0;
     }
+    return 0;
+}
 
-    // ===== Server ABI =====
-    bool Server_Bind(std::uint16_t port) noexcept
-    { return ServerSide::Bind(port); }
+// ===== Server ABI =====
+PLUGIN_API bool Server_Bind(std::uint16_t port) noexcept
+{ return ServerSide::Bind(port); }
 
-    int Server_Serve(
-        const std::function<ssize_t(std::uint8_t *, std::size_t)> &receive_from_net,
-        const std::function<ssize_t(const std::uint8_t *, std::size_t)> &send_to_net,
-        const volatile sig_atomic_t *working_flag) noexcept
+PLUGIN_API int Server_Serve(
+    const std::function<ssize_t(std::uint8_t *, std::size_t)> &receive_from_net,
+    const std::function<ssize_t(const std::uint8_t *, std::size_t)> &send_to_net,
+    const volatile sig_atomic_t *working_flag) noexcept
+{
+    if (!ServerSide::sock) return 1;
+
+    std::array<std::uint8_t, ServerSide::BufCap> buf{};
+
+    while (*working_flag)
     {
-        if (!ServerSide::sock) return 1;
-
-        std::array<std::uint8_t, ServerSide::BufCap> buf{};
-
-        while (*working_flag)
+        for (;;)
         {
-            for (;;)
+            std::string pkt;
+            if (!ServerSide::DequeueFromClients(pkt)) break;
+            if (!pkt.empty())
             {
-                std::string pkt;
-                if (!ServerSide::DequeueFromClients(pkt)) break;
-                if (!pkt.empty())
-                {
-                    (void) send_to_net(
-                        reinterpret_cast<const std::uint8_t *>(pkt.data()),
-                        static_cast<std::size_t>(pkt.size()));
-                }
-            }
-
-            for (;;)
-            {
-                ssize_t got = receive_from_net(buf.data(), buf.size());
-                if (got > 0)
-                {
-                    ServerSide::EnqueueToClient(buf.data(),
-                                                static_cast<std::size_t>(got));
-                    continue;
-                }
-                if (got == 0) break;
-                else
-                {
-                    ServerSide::Stop();
-                    return 1;
-                }
+                (void) send_to_net(
+                    reinterpret_cast<const std::uint8_t *>(pkt.data()),
+                    static_cast<std::size_t>(pkt.size()));
             }
         }
 
-        ServerSide::Stop();
-        return 0;
+        for (;;)
+        {
+            ssize_t got = receive_from_net(buf.data(), buf.size());
+            if (got > 0)
+            {
+                ServerSide::EnqueueToClient(buf.data(),
+                                            static_cast<std::size_t>(got));
+                continue;
+            }
+            if (got == 0) break;
+            else
+            {
+                ServerSide::Stop();
+                return 1;
+            }
+        }
     }
+
+    ServerSide::Stop();
+    return 0;
 }

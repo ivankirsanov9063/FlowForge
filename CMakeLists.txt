@@ -34,5 +34,5 @@ if(CMAKE_CONFIGURATION_TYPES)
 endif()
 
 add_subdirectory(Client)
-add_subdirectory(Server)
+#add_subdirectory(Server)
 add_subdirectory(Plugins)

@@ -29,13 +29,6 @@ void warn(const char *where, int err);
 bool is_ipv6_literal(const std::string &s);
 
 /**
- * @brief Удаляет квадратные скобки вокруг IPv6-адреса.
- * @param s Строка с адресом.
- * @return Адрес без скобок.
- */
-std::string strip_brackets(std::string s);
-
-/**
  * @brief Устанавливает сетевой интерфейс в состояние UP.
  * @param ifname Имя интерфейса.
  * @return 0 при успехе, отрицательный код ошибки.
@@ -131,3 +124,5 @@ void write_proc(const char *path, const char *data);
 void write_proc_if_sysctl(const std::string &ifname,
                                  const char       *key,
                                  const char       *value);
+
+int ConfigureNetwork(const std::string& tun, const std::string& server_ip);

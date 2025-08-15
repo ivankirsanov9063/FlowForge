@@ -1,76 +1,65 @@
+#include "PluginWrapper.hpp"
+
 #include <array>
 #include <chrono>
 #include <csignal>
 #include <functional>
 #include <iostream>
+#include <cstdint>
+#include <cstddef>
+
+#ifdef __linux__
+
 #include <unistd.h>
 #include <dlfcn.h>
 
+#elif _WIN32
+
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+
+#include <winsock2.h>
+#include <ws2tcpip.h>
+#include <windows.h>
+
+#endif
+
+
 namespace PluginWrapper
 {
-    using Client_Connect_t =
-            bool (*)(const std::string &,
-                     std::uint16_t) noexcept;
-
-    using Client_Disconnect_t =
-            void (*)(void) noexcept;
-
-    using Client_Serve_t =
-            int (*)(const std::function<ssize_t(std::uint8_t *,
-                                                std::size_t)> &,
-                    const std::function<ssize_t(const std::uint8_t *,
-                                                std::size_t)> &,
-                    const volatile sig_atomic_t *) noexcept;
-
-    using Server_Bind_t =
-            bool (*)(std::uint16_t) noexcept;
-
-    using Server_Serve_t =
-            int (*)(const std::function<ssize_t(std::uint8_t *,
-                                                std::size_t)> &,
-                    const std::function<ssize_t(const std::uint8_t *,
-                                                std::size_t)> &,
-                    const volatile sig_atomic_t *) noexcept;
-
-    struct Plugin
-    {
-        void *             handle            = nullptr;
-        Client_Connect_t    Client_Connect    = nullptr;
-        Client_Disconnect_t Client_Disconnect = nullptr;
-        Client_Serve_t      Client_Serve      = nullptr;
-        Server_Bind_t       Server_Bind       = nullptr;
-        Server_Serve_t      Server_Serve      = nullptr;
-
-        Plugin()
-                : handle(nullptr),
-                  Client_Connect(nullptr),
-                  Client_Disconnect(nullptr),
-                  Client_Serve(nullptr),
-                  Server_Bind(nullptr),
-                  Server_Serve(nullptr)
-        {}
-    };
-
     static void* Sym(void       *h,
                      const char *name)
     {
-        void *p = dlsym(h, name);
-        if (!p)
+        void* ptr = nullptr;
+#ifdef __linux__
+        ptr = dlsym(h, name);
+#elif _WIN32
+        ptr = reinterpret_cast<void*>(GetProcAddress(reinterpret_cast<HMODULE>(h), name));
+#endif
+        if (!ptr)
         {
-            std::cerr << "dlsym failed: " << name
-                      << " : " << dlerror() << "\n";
+            std::cerr << "Error in get symbol from plugin\n";
         }
-        return p;
+        return ptr;
     }
 
     Plugin Load(const std::string &path)
     {
         Plugin plugin;
+#ifdef __linux__
         plugin.handle = dlopen(path.c_str(),
                                RTLD_NOW | RTLD_LOCAL);
+#elif _WIN32
+        plugin.handle = LoadLibraryA(path.c_str());
+#endif
+
         if (!plugin.handle)
         {
-            std::cerr << "dlopen failed: " << dlerror() << "\n";
+            std::cerr << "Error in load plugin\n";
             return plugin;
         }
 
@@ -104,7 +93,11 @@ namespace PluginWrapper
         if (!fine)
         {
             std::cerr << "Plugin missing required symbols\n";
+#ifdef __linux__
             dlclose(plugin.handle);
+#elif _WIN32
+            FreeLibrary(reinterpret_cast<HMODULE>(plugin.handle));
+#endif
             plugin.handle = nullptr;
         }
 
@@ -115,49 +108,54 @@ namespace PluginWrapper
     {
         if (plugin.handle)
         {
+#ifdef __linux__
             dlclose(plugin.handle);
+#elif _WIN32
+            FreeLibrary(reinterpret_cast<HMODULE>(plugin.handle));
+#endif
+
         }
     }
 
     bool Client_Connect(const Plugin     &plugin,
                         const std::string &server_ip,
                         std::uint16_t      port) noexcept
-{
-    return plugin.Client_Connect(server_ip, port);
-}
+    {
+        return plugin.Client_Connect(server_ip, port);
+    }
 
-void Client_Disconnect(const Plugin &plugin) noexcept
-{
-plugin.Client_Disconnect();
-}
+    void Client_Disconnect(const Plugin &plugin) noexcept
+    {
+        plugin.Client_Disconnect();
+    }
 
-int Client_Serve(const Plugin &plugin,
-                 const std::function<ssize_t(std::uint8_t *,
-                                             std::size_t)> &receive_from_net,
-                 const std::function<ssize_t(const std::uint8_t *,
-                                             std::size_t)> &send_to_net,
-                 const volatile sig_atomic_t *working_flag) noexcept
-{
-return plugin.Client_Serve(receive_from_net,
-        send_to_net,
-        working_flag);
-}
+    int Client_Serve(const Plugin &plugin,
+                     const std::function<ssize_t(std::uint8_t *,
+                                                 std::size_t)> &receive_from_net,
+                     const std::function<ssize_t(const std::uint8_t *,
+                                                 std::size_t)> &send_to_net,
+                     const volatile sig_atomic_t *working_flag) noexcept
+    {
+        return plugin.Client_Serve(receive_from_net,
+            send_to_net,
+            working_flag);
+    }
 
-bool Server_Bind(const Plugin &plugin,
-                 std::uint16_t port) noexcept
-{
-return plugin.Server_Bind(port);
-}
+    bool Server_Bind(const Plugin &plugin,
+                     std::uint16_t port) noexcept
+    {
+        return plugin.Server_Bind(port);
+    }
 
-int Server_Serve(const Plugin &plugin,
-                 const std::function<ssize_t(std::uint8_t *,
-                                             std::size_t)> &receive_from_net,
-                 const std::function<ssize_t(const std::uint8_t *,
-                                             std::size_t)> &send_to_net,
-                 const volatile sig_atomic_t *working_flag) noexcept
-{
-return plugin.Server_Serve(receive_from_net,
-        send_to_net,
-        working_flag);
-}
+    int Server_Serve(const Plugin &plugin,
+                     const std::function<ssize_t(std::uint8_t *,
+                                                 std::size_t)> &receive_from_net,
+                     const std::function<ssize_t(const std::uint8_t *,
+                                                 std::size_t)> &send_to_net,
+                     const volatile sig_atomic_t *working_flag) noexcept
+    {
+        return plugin.Server_Serve(receive_from_net,
+            send_to_net,
+            working_flag);
+    }
 }
