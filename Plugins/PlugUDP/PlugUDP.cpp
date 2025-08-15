@@ -4,58 +4,21 @@
 
 #include <cstring>
 #include <deque>
-#include <array>
-#include <vector>
-#include <thread>
-#include <mutex>
-#include <unordered_map>
-#include <chrono>
-#include <memory>
-
-// ===== cross-platform socket bits =====
-#ifdef _WIN32
-  #ifndef WIN32_LEAN_AND_MEAN
-  #define WIN32_LEAN_AND_MEAN
-  #endif
-  #ifndef NOMINMAX
-  #define NOMINMAX
-  #endif
-  #include <winsock2.h>
-  #include <ws2tcpip.h>
-  #include <BaseTsd.h>
-  #ifndef ssize_t
-  using ssize_t = SSIZE_T;
-  #endif
-  using socklen_t = int;
-  #pragma comment(lib, "Ws2_32.lib")
-
-  static void wsa_init_once() {
-      static std::once_flag once;
-      std::call_once(once, []{
-          WSADATA w{};
-          WSAStartup(MAKEWORD(2,2), &w);
-      });
-  }
-#else
-  #include <arpa/inet.h>
-  #include <netinet/in.h>
-  #include <sys/socket.h>
-  #include <unistd.h>
-  #include <fcntl.h>
-  #include <errno.h>
-#endif
+#include <arpa/inet.h>
 
 using boost::asio::ip::udp;
 
 namespace iphelpers
 {
     inline bool ExtractIPv4Src(const std::uint8_t *p,
-                               std::size_t n,
-                               std::uint32_t &out_host) noexcept
+                   std::size_t         n,
+                   std::uint32_t      &out_host) noexcept
     {
         if (n < 20 || (p[0] >> 4) != 4) return false;
+
         std::size_t ihl = (p[0] & 0x0Fu) * 4u;
         if (ihl < 20 || n < ihl) return false;
+
         std::uint32_t src;
         std::memcpy(&src, p + 12, 4);
         out_host = ntohl(src);
@@ -63,32 +26,36 @@ namespace iphelpers
     }
 
     inline bool ExtractIPv4Dst(const std::uint8_t *p,
-                               std::size_t n,
-                               std::uint32_t &out_host) noexcept
+                   std::size_t         n,
+                   std::uint32_t      &out_host) noexcept
     {
         if (n < 20 || (p[0] >> 4) != 4) return false;
+
         std::size_t ihl = (p[0] & 0x0Fu) * 4u;
         if (ihl < 20 || n < ihl) return false;
+
         std::uint32_t dst;
         std::memcpy(&dst, p + 16, 4);
         out_host = ntohl(dst);
         return true;
     }
 
-    inline bool ExtractIPv6Src(const std::uint8_t *p,
-                               std::size_t n,
-                               std::array<std::uint8_t, 16> &out) noexcept
+    inline bool ExtractIPv6Src(const std::uint8_t           *p,
+                   std::size_t                   n,
+                   std::array<std::uint8_t, 16> &out) noexcept
     {
         if (n < 40 || ((p[0] >> 4) != 6)) return false;
+
         std::memcpy(out.data(), p + 8, 16);
         return true;
     }
 
-    inline bool ExtractIPv6Dst(const std::uint8_t *p,
-                               std::size_t n,
-                               std::array<std::uint8_t, 16> &out) noexcept
+    inline bool ExtractIPv6Dst(const std::uint8_t           *p,
+                   std::size_t                   n,
+                   std::array<std::uint8_t, 16> &out) noexcept
     {
         if (n < 40 || ((p[0] >> 4) != 6)) return false;
+
         std::memcpy(out.data(), p + 24, 16);
         return true;
     }
@@ -112,18 +79,26 @@ namespace ClientSide
     std::unique_ptr<udp::socket> sock;
     udp::endpoint                server_ep;
 
-    std::mutex              m_rx;
+    std::mutex            m_rx;
     std::deque<std::string> q_rx;
 
-    std::mutex              m_tx;
+    std::mutex            m_tx;
     std::deque<std::string> q_tx;
     bool                    tx_in_flight = false;
 
     inline void StopIo()
     {
-        if (work) { work->reset(); work.reset(); }
+        if (work)
+        {
+            work->reset();
+            work.reset();
+        }
+
         if (io) io->stop();
-        for (auto &t : threads) if (t.joinable()) t.join();
+
+        for (auto &t : threads)
+            if (t.joinable()) t.join();
+
         threads.clear();
 
         if (sock && sock->is_open())
@@ -131,11 +106,19 @@ namespace ClientSide
             boost::system::error_code ec;
             sock->close(ec);
         }
+
         sock.reset();
         io.reset();
 
-        { std::lock_guard<std::mutex> lk(m_rx); q_rx.clear(); }
-        { std::lock_guard<std::mutex> lk(m_tx); q_tx.clear(); tx_in_flight = false; }
+        {
+            std::lock_guard<std::mutex> lk(m_rx);
+            q_rx.clear();
+        }
+        {
+            std::lock_guard<std::mutex> lk(m_tx);
+            q_tx.clear();
+            tx_in_flight = false;
+        }
     }
 
     inline void KickSendLocked()
@@ -151,7 +134,8 @@ namespace ClientSide
 
         sock->async_send(
             boost::asio::buffer(*buf),
-            [buf](const boost::system::error_code &ec, std::size_t)
+            [buf](const boost::system::error_code &ec,
+                  std::size_t /*n*/)
             {
                 std::lock_guard<std::mutex> lk(m_tx);
                 tx_in_flight = false;
@@ -161,7 +145,8 @@ namespace ClientSide
         );
     }
 
-    inline void EnqueueTx(const std::uint8_t *p, std::size_t n)
+    inline void EnqueueTx(const std::uint8_t *p,
+              std::size_t         n)
     {
         std::lock_guard<std::mutex> lk(m_tx);
         q_tx.emplace_back(reinterpret_cast<const char *>(p),
@@ -175,7 +160,8 @@ namespace ClientSide
 
         sock->async_receive(
             boost::asio::buffer(*buf),
-            [buf](const boost::system::error_code &ec, std::size_t n)
+            [buf](const boost::system::error_code &ec,
+                  std::size_t n)
             {
                 if (!ec && n > 0)
                 {
@@ -188,26 +174,34 @@ namespace ClientSide
         );
     }
 
-    inline bool Connect(const std::string &ip, std::uint16_t port) noexcept
+    inline bool Connect(const std::string &ip,
+            std::uint16_t      port) noexcept
     {
         try
         {
-#ifdef _WIN32
-            wsa_init_once();
-#endif
             io = std::make_unique<boost::asio::io_context>();
-            work = std::make_unique<WorkGuard>(boost::asio::make_work_guard(*io));
+            work = std::make_unique<WorkGuard>(
+                       boost::asio::make_work_guard(*io));
 
             boost::system::error_code ec;
             auto addr = boost::asio::ip::make_address(ip, ec);
-            if (ec) { StopIo(); return false; }
+            if (ec)
+            {
+                StopIo();
+                return false;
+            }
 
             sock = std::make_unique<udp::socket>(*io);
 
             if (addr.is_v6())
             {
                 sock->open(udp::v6(), ec);
-                if (ec) { StopIo(); return false; }
+                if (ec)
+                {
+                    StopIo();
+                    return false;
+                }
+
                 boost::asio::ip::v6_only v6only(false);
                 boost::system::error_code ig;
                 sock->set_option(v6only, ig);
@@ -215,12 +209,20 @@ namespace ClientSide
             else
             {
                 sock->open(udp::v4(), ec);
-                if (ec) { StopIo(); return false; }
+                if (ec)
+                {
+                    StopIo();
+                    return false;
+                }
             }
 
             server_ep = udp::endpoint{ addr, port };
             sock->connect(server_ep, ec);
-            if (ec) { StopIo(); return false; }
+            if (ec)
+            {
+                StopIo();
+                return false;
+            }
 
             StartRecvLoop();
             threads.reserve(IoThreads);
@@ -236,6 +238,7 @@ namespace ClientSide
         }
     }
 }
+
 
 // ===================== SERVER (async UDP, многоклиентный) =====================
 namespace ServerSide
@@ -255,7 +258,7 @@ namespace ServerSide
     std::unique_ptr<WorkGuard> work;
     std::vector<std::thread>   threads;
 
-    std::unique_ptr<udp::socket>               sock;
+    std::unique_ptr<udp::socket>             sock;
     std::unique_ptr<boost::asio::steady_timer> gc_timer;
 
     struct Client
@@ -273,25 +276,46 @@ namespace ServerSide
         std::uint32_t                 v4 = 0;
         std::array<std::uint8_t, 16>  v6addr{};
 
-        static VipKey FromV4(std::uint32_t a) { VipKey k; k.v6=false; k.v4=a; return k; }
+        static VipKey FromV4(std::uint32_t a)
+        {
+            VipKey k;
+            k.v6 = false;
+            k.v4 = a;
+            return k;
+        }
+
         static VipKey FromV6(const std::array<std::uint8_t, 16> &a)
-        { VipKey k; k.v6=true; k.v6addr=a; return k; }
+        {
+            VipKey k;
+            k.v6     = true;
+            k.v6addr = a;
+            return k;
+        }
 
         bool operator==(const VipKey &o) const noexcept
-        { return v6 ? (o.v6 && v6addr==o.v6addr) : (!o.v6 && v4==o.v4); }
+        {
+            if (v6 != o.v6) return false;
+            return v6 ? (v6addr == o.v6addr) : (v4 == o.v4);
+        }
 
-        struct Hasher {
-            std::size_t operator()(const VipKey &k) const noexcept
+        struct Hasher
+        {
+            std::size_t
+            operator()(const VipKey &k) const noexcept
             {
                 if (!k.v6) return std::hash<std::uint32_t>{}(k.v4);
                 std::size_t h = 1469598103934665603ull; // FNV-1a
-                for (auto b : k.v6addr) { h ^= b; h *= 1099511628211ull; }
+                for (auto b : k.v6addr)
+                {
+                    h ^= b;
+                    h *= 1099511628211ull;
+                }
                 return h;
             }
         };
     };
 
-    std::mutex              m_from;
+    std::mutex m_from;
     std::deque<std::string> from_clients;
 
     std::mutex m_clients;
@@ -299,17 +323,23 @@ namespace ServerSide
                        std::unique_ptr<Client>,
                        VipKey::Hasher> vip_to_client;
 
-    inline std::uint64_t NowMs() noexcept
+    inline std::uint64_t
+    NowMs() noexcept
     {
         using namespace std::chrono;
         return static_cast<std::uint64_t>(
-            duration_cast<milliseconds>(steady_clock::now().time_since_epoch()).count());
+            duration_cast<milliseconds>(
+                steady_clock::now().time_since_epoch()).count()
+        );
     }
 
-    static inline bool MakeVipKeyFromSrc(const std::uint8_t *p, std::size_t n, VipKey &out) noexcept
+    static inline bool MakeVipKeyFromSrc(const std::uint8_t *p,
+                      std::size_t         n,
+                      VipKey             &out) noexcept
     {
         if (n < 1) return false;
         unsigned ver = (p[0] >> 4);
+
         if (ver == 4)
         {
             std::uint32_t v4{};
@@ -323,7 +353,16 @@ namespace ServerSide
             if (n < 40) return false;
             std::array<std::uint8_t, 16> v6{};
             if (!iphelpers::ExtractIPv6Src(p, n, v6)) return false;
-            bool zero = true; for (auto b : v6) if (b) { zero=false; break; }
+
+            bool zero = true;
+            for (auto b : v6)
+            {
+                if (b)
+                {
+                    zero = false;
+                    break;
+                }
+            }
             if (zero || v6[0] == 0xFF) return false;
             out = VipKey::FromV6(v6);
             return true;
@@ -331,10 +370,13 @@ namespace ServerSide
         return false;
     }
 
-    static inline bool MakeVipKeyFromDst(const std::uint8_t *p, std::size_t n, VipKey &out) noexcept
+    static inline bool MakeVipKeyFromDst(const std::uint8_t *p,
+                      std::size_t         n,
+                      VipKey             &out) noexcept
     {
         if (n < 1) return false;
         unsigned ver = (p[0] >> 4);
+
         if (ver == 4)
         {
             std::uint32_t v4{};
@@ -348,7 +390,16 @@ namespace ServerSide
             if (n < 40) return false;
             std::array<std::uint8_t, 16> v6{};
             if (!iphelpers::ExtractIPv6Dst(p, n, v6)) return false;
-            bool zero = true; for (auto b : v6) if (b) { zero=false; break; }
+
+            bool zero = true;
+            for (auto b : v6)
+            {
+                if (b)
+                {
+                    zero = false;
+                    break;
+                }
+            }
             if (zero || v6[0] == 0xFF) return false;
             out = VipKey::FromV6(v6);
             return true;
@@ -363,7 +414,8 @@ namespace ServerSide
 
         sock->async_receive_from(
             boost::asio::buffer(*buf), *peer,
-            [buf, peer](const boost::system::error_code &ec, std::size_t n)
+            [buf, peer](const boost::system::error_code &ec,
+                        std::size_t                      n)
             {
                 if (!ec && n > 0)
                 {
@@ -404,8 +456,8 @@ namespace ServerSide
 
         Client &c = *(*cl_slot);
 
-        std::string   payload;
-        udp::endpoint ep;
+        std::string     payload;
+        udp::endpoint   ep;
         {
             std::lock_guard<std::mutex> lk(c.mtx);
             if (c.tx_in_flight || c.q_tx.empty()) return;
@@ -416,9 +468,11 @@ namespace ServerSide
         }
 
         auto buf = std::make_shared<std::string>(std::move(payload));
+
         sock->async_send_to(
             boost::asio::buffer(*buf), ep,
-            [buf, vip](const boost::system::error_code &ec, std::size_t)
+            [buf, vip](const boost::system::error_code &ec,
+                       std::size_t /*n*/)
             {
                 std::unique_ptr<Client> *cl_slot2 = nullptr;
                 {
@@ -438,12 +492,16 @@ namespace ServerSide
                 }
 
                 if (has_more && sock)
-                    boost::asio::post(sock->get_executor(), [vip] { ContinueSend(vip); });
+                {
+                    boost::asio::post(sock->get_executor(),
+                                      [vip] { ContinueSend(vip); });
+                }
             }
         );
     }
 
-    inline void EnqueueToClient(const std::uint8_t *p, std::size_t n)
+    inline void EnqueueToClient(const std::uint8_t *p,
+                    std::size_t         n)
     {
         VipKey key{};
         if (!MakeVipKeyFromDst(p, n, key)) return;
@@ -466,15 +524,16 @@ namespace ServerSide
         }
 
         if (sock)
-            boost::asio::post(sock->get_executor(), [key] { ContinueSend(key); });
+        {
+            boost::asio::post(sock->get_executor(),
+                              [key] { ContinueSend(key); });
+        }
     }
-
-    inline std::uint64_t NowMsSafe() { return NowMs(); }
 
     inline void GcTick(const boost::system::error_code &ec)
     {
         if (ec || !gc_timer) return;
-        const std::uint64_t now = NowMsSafe();
+        const std::uint64_t now = NowMs();
 
         {
             std::lock_guard<std::mutex> lk(m_clients);
@@ -496,11 +555,9 @@ namespace ServerSide
     {
         try
         {
-#ifdef _WIN32
-            wsa_init_once();
-#endif
             io = std::make_unique<boost::asio::io_context>();
-            work = std::make_unique<WorkGuard>(boost::asio::make_work_guard(*io));
+            work = std::make_unique<WorkGuard>(
+                       boost::asio::make_work_guard(*io));
 
             sock = std::make_unique<udp::socket>(*io);
             boost::system::error_code ec;
@@ -538,10 +595,17 @@ namespace ServerSide
         {
             if (work) { work->reset(); work.reset(); }
             if (io) io->stop();
-            for (auto &t : threads) if (t.joinable()) t.join();
+
+            for (auto &t : threads)
+                if (t.joinable()) t.join();
+
             threads.clear();
 
-            if (sock && sock->is_open()) { boost::system::error_code e; sock->close(e); }
+            if (sock && sock->is_open())
+            {
+                boost::system::error_code e;
+                sock->close(e);
+            }
             sock.reset();
             gc_timer.reset();
             io.reset();
@@ -553,16 +617,29 @@ namespace ServerSide
     {
         if (work) { work->reset(); work.reset(); }
         if (io) io->stop();
-        for (auto &t : threads) if (t.joinable()) t.join();
+
+        for (auto &t : threads)
+            if (t.joinable()) t.join();
+
         threads.clear();
 
-        if (sock && sock->is_open()) { boost::system::error_code ec; sock->close(ec); }
+        if (sock && sock->is_open())
+        {
+            boost::system::error_code ec;
+            sock->close(ec);
+        }
         sock.reset();
         gc_timer.reset();
         io.reset();
 
-        { std::lock_guard<std::mutex> lk(m_from); from_clients.clear(); }
-        { std::lock_guard<std::mutex> lk(m_clients); vip_to_client.clear(); }
+        {
+            std::lock_guard<std::mutex> lk(m_from);
+            from_clients.clear();
+        }
+        {
+            std::lock_guard<std::mutex> lk(m_clients);
+            vip_to_client.clear();
+        }
     }
 
     inline bool DequeueFromClients(std::string &out)
@@ -582,7 +659,8 @@ extern "C"
     void Client_Disconnect() noexcept
     { ClientSide::StopIo(); }
 
-    bool Client_Connect(const std::string &server_ip, std::uint16_t port) noexcept
+    bool Client_Connect(const std::string  &server_ip,
+                   std::uint16_t       port) noexcept
     {
         Client_Disconnect();
         return ClientSide::Connect(server_ip, port);
