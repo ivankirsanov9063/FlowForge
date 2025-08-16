@@ -63,7 +63,7 @@ int main(int argc, char **argv) {
         return 1;
     }
     // если твоя сигнатура без server_ip — верни как было: ConfigureNetwork(tun)
-    int configured = ConfigureNetwork(tun);
+    int configured = ConfigureNetwork(tun, server_ip);
     if (configured != 0) {
         close(tun_fd);
         PluginWrapper::Unload(plugin);
