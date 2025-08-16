@@ -1,5 +1,5 @@
 add_executable(Client
-        Client.cpp
+        ${CMAKE_SYSTEM_NAME}/Client.cpp
         ${CMAKE_SYSTEM_NAME}/Network.cpp
         ${CMAKE_SOURCE_DIR}/PluginWrapper.cpp
         ${CMAKE_SOURCE_DIR}/TUN.cpp
