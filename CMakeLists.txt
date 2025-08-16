@@ -34,5 +34,7 @@ if(CMAKE_CONFIGURATION_TYPES)
 endif()
 
 add_subdirectory(Client)
-#add_subdirectory(Server)
 add_subdirectory(Plugins)
+if (CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    add_subdirectory(Server)
+endif()
