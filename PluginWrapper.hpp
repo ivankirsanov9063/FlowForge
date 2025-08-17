@@ -88,7 +88,7 @@ namespace PluginWrapper
      * @param name Имя экспортируемого символа.
      * @return Указатель на символ или nullptr.
      */
-    static void* Sym(void *h, const char *name);
+    void* Sym(void *h, const char *name);
 
     /**
      * @brief Загружает плагин и инициализирует его функции.
