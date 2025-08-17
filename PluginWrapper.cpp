@@ -31,7 +31,7 @@
 
 namespace PluginWrapper
 {
-    static void* Sym(void       *h,
+    void* Sym(void       *h,
                      const char *name)
     {
         void* ptr = nullptr;
