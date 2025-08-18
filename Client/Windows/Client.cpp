@@ -1,6 +1,10 @@
 #include "PluginWrapper.hpp"
 #include "TUN.hpp"
 #include "Network.hpp"
+#include "FirewallRules.hpp"
+#include "NetWatcher.hpp"
+#include "DNS.hpp"
+#include "NetworkRollback.hpp"
 
 #ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
@@ -8,6 +12,7 @@
 #ifndef NOMINMAX
 #define NOMINMAX
 #endif
+#include <chrono>
 #include <winsock2.h>
 #include <ws2tcpip.h>
 #include <windows.h>
@@ -19,8 +24,30 @@ using ssize_t = SSIZE_T;
 #include <iostream>
 #include <string>
 
+static fw::ClientRule cfg{
+    .rule_prefix = L"FlowForge",
+    .app_path    = L"C:\\Users\\choix\\CLionProjects\\FlowForge\\build\\bin\\Client.exe",
+    .server_ip   = L"193.233.23.221",
+    .udp_port    = 5555
+};
+
+NET_LUID luid{};
+netrb::Baseline base{};
+
 static volatile sig_atomic_t working = true;
-static void on_exit(int) { working = false; }
+static void on_exit(int) {
+    netrb::RollbackAll(base, reinterpret_cast<const char *>(cfg.server_ip.c_str()));
+
+    if (!fw::RemoveByPrefix(cfg.rule_prefix)) {
+        std::wcerr << L"[ERR] RemoveByPrefix failed: " << fw::LastError() << L"\n";
+    }
+
+    if (!dns::Dns_Unset(luid)) {
+        std::wcerr << L"[ERR] Dns_Unset failed\n";
+    }
+
+    working = false;
+}
 
 static std::string strip_brackets(std::string s) {
     if (!s.empty() && s.front() == '[' && s.back() == ']')
@@ -54,8 +81,24 @@ static void debug_packet_info(const std::uint8_t* data, std::size_t len, const c
     }
 }
 
+bool IsElevated() noexcept {
+    HANDLE hToken = nullptr;
+    if (!OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &hToken))
+        return false;
+
+    TOKEN_ELEVATION elev{};
+    DWORD cb = 0;
+    const BOOL ok = GetTokenInformation(hToken, TokenElevation, &elev, sizeof(elev), &cb);
+    CloseHandle(hToken);
+    return ok && elev.TokenIsElevated;
+}
 
 int main(int argc, char **argv) {
+    if (!IsElevated()) {
+        std::cerr << "Please run this with administration rights!" << std::endl;
+        return 1;
+    }
+
     std::string tun       = "cvpn0";
     std::string server_ip = "193.233.23.221";
     int         port      = 5555;
@@ -86,6 +129,12 @@ int main(int argc, char **argv) {
     WSADATA wsa;
     if (WSAStartup(MAKEWORD(2,2), &wsa) != 0) { std::cerr << "WSAStartup failed\n"; return 1; }
 
+    if (!fw::EnsureClientOutboundUdp(cfg)) {
+        std::cerr << "error EnsureClientOutboundUdp" << std::endl;
+        return 1;
+        // залогируйте fw::LastError()
+    }
+
     auto plugin = PluginWrapper::Load(plugin_path);
     if (!plugin.handle) { WSACleanup(); return 1; }
 
@@ -99,6 +148,39 @@ int main(int argc, char **argv) {
             WSACleanup();
             return 1;
         }
+    }
+
+    Wintun.GetLuid(adapter, &luid);
+    netrb::CaptureBaseline(luid, base);
+
+    std::vector<std::wstring> dnsServers = { L"10.8.0.1", L"1.1.1.1" }; // IPv4/IPv6 можно смешивать
+    if (!dns::Dns_Set(luid, dnsServers /*, L"corp.local"*/)) {
+        std::wcerr << L"[DNS] set failed: " << dns::Dns_LastError() << L"\n";
+    }
+
+    auto reapply = [&]() {
+        if (ConfigureNetwork_Base(adapter) != 0) {
+            std::cerr << "ConfigureNetwork_Base failed\n";
+            Wintun.Close(adapter);
+            PluginWrapper::Unload(plugin);
+            WSACleanup();
+        }
+        bool pin_ok = ConfigureNetwork_PinServer(adapter, server_ip);
+        if (!pin_ok) {
+            std::cerr << "[ABORT SWITCH] pin to server failed — leaving default routes unchanged\n";
+        } else {
+            if (!ConfigureNetwork_ActivateDefaults(adapter)) {
+                std::cerr << "ConfigureNetwork_ActivateDefaults failed (continuing)\n";
+            }
+        }
+    };
+
+    reapply();
+    nw::NetWatcher watcher;
+    if (!nw::StartNetWatcher(watcher, reapply, std::chrono::milliseconds(1500))) {
+        std::cerr << "Error in StartNetWatcher\n";
+        // лог/ошибка
+        return 1;
     }
 
     if (ConfigureNetwork_Base(adapter) != 0) {
@@ -128,14 +210,6 @@ int main(int argc, char **argv) {
         PluginWrapper::Unload(plugin);
         WSACleanup();
         return 1;
-    }
-
-    if (!pin_ok) {
-        std::cerr << "[ABORT SWITCH] pin to server failed — leaving default routes unchanged\n";
-    } else {
-        if (!ConfigureNetwork_ActivateDefaults(adapter)) {
-            std::cerr << "ConfigureNetwork_ActivateDefaults failed (continuing)\n";
-        }
     }
 
     std::signal(SIGINT,  on_exit);
