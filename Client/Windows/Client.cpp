@@ -26,14 +26,11 @@ using ssize_t = SSIZE_T;
 #include <string>
 
 NET_LUID luid{};
-NetworkRollback::Baseline base{};
 
 static volatile sig_atomic_t working = true;
 
 static void on_exit(int)
 {
-    //NetworkRollback::RollbackAll(base, reinterpret_cast<const char *>(cfg.server_ip.c_str()));
-
     working = false;
 }
 
@@ -208,7 +205,7 @@ int main(int argc,
     }
 
     Wintun.GetLuid(adapter, &luid);
-    NetworkRollback::CaptureBaseline(luid, base);
+    NetworkRollback rollback(luid, server_ip); // RAII: снимок + авто-откат в деструкторе
 
     DNS dns(luid);
     dns.Apply({L"10.8.0.1", L"1.1.1.1"});
