@@ -5,73 +5,126 @@
 namespace Network
 {
 
-std::optional<MIB_IPFORWARD_ROW2> fallback_default_route_excluding(const NET_LUID &exclude)
+namespace
 {
-    PMIB_IPFORWARD_TABLE2 tbl = nullptr;
-    if (GetIpForwardTable2(AF_INET, &tbl) != NO_ERROR)
+    inline bool is_v6_string(const std::string &s)
     {
-        return std::nullopt;
+        return s.find(':') != std::string::npos;
     }
 
-    std::optional<MIB_IPFORWARD_ROW2> best;
-    for (ULONG i = 0; i < tbl->NumEntries; ++i)
+    bool ipv4_from_string_(const char *s, IN_ADDR &out)
     {
-        const auto &row = tbl->Table[i];
-        if (row.InterfaceLuid.Value == exclude.Value) continue;
-        if (row.DestinationPrefix.Prefix.si_family != AF_INET) continue;
-        if (row.DestinationPrefix.PrefixLength != 0) continue;
-        if (!best || row.Metric < best->Metric) best = row;
+        return InetPtonA(AF_INET, s, &out) == 1;
     }
-    if (tbl)
+
+    bool ipv6_from_string_(const char *s, IN6_ADDR &out)
     {
-        FreeMibTable(tbl);
+        return InetPtonA(AF_INET6, s, &out) == 1;
     }
-    return best;
+
+    ADDRESS_FAMILY fam(IpVersion ver)
+    {
+        return (ver == IpVersion::V6) ? AF_INET6 : AF_INET;
+    }
+
+    const char *family_tag(IpVersion ver)
+    {
+        return (ver == IpVersion::V6) ? "v6" : "v4";
+    }
+
+    // Локальные адреса/peer — как и раньше
+    static const char *LOCAL4 = "10.8.0.2";
+    static const char *PEER4  = "10.8.0.1";
+    static const char *LOCAL6 = "fd00:dead:beef::2";
+    static const char *PEER6  = "fd00:dead:beef::1";
 }
 
-std::optional<MIB_IPFORWARD_ROW2> fallback_default_route6_excluding(const NET_LUID &exclude)
+// ---------------- low-level generic ----------------
+
+void set_if_metric(const NET_LUID &ifLuid,
+                   ULONG metric,
+                   IpVersion ver)
 {
-    PMIB_IPFORWARD_TABLE2 tbl = nullptr;
-    if (GetIpForwardTable2(AF_INET6, &tbl) != NO_ERROR)
+    MIB_IPINTERFACE_ROW row{};
+    InitializeIpInterfaceEntry(&row);
+    row.Family = fam(ver);
+    row.InterfaceLuid = ifLuid;
+    if (GetIpInterfaceEntry(&row) != NO_ERROR)
     {
-        return std::nullopt;
+        throw std::runtime_error("GetIpInterfaceEntry failed for metric");
     }
 
-    std::optional<MIB_IPFORWARD_ROW2> best;
-    for (ULONG i = 0; i < tbl->NumEntries; ++i)
+    row.UseAutomaticMetric = FALSE;
+    row.Metric = metric;
+
+    DWORD err = SetIpInterfaceEntry(&row);
+    if (err == ERROR_INVALID_PARAMETER)
     {
-        const auto &row = tbl->Table[i];
-        if (row.InterfaceLuid.Value == exclude.Value) continue;
-        if (row.DestinationPrefix.Prefix.si_family != AF_INET6) continue;
-        if (row.DestinationPrefix.PrefixLength != 0) continue;
-        if (!best || row.Metric < best->Metric) best = row;
+        std::printf("[WARN] SetIpInterfaceEntry(%s metric=%lu) rc=87, ignored\n",
+                    family_tag(ver), metric);
+        return;
     }
-    if (tbl)
+    if (err != NO_ERROR)
     {
-        FreeMibTable(tbl);
+        throw std::runtime_error("SetIpInterfaceEntry(metric) failed");
     }
-    return best;
 }
 
-// ================================ IPv6 ==================================
-
-bool ipv6_from_string(const char *s,
-                      IN6_ADDR &out)
+void set_if_mtu(const NET_LUID &ifLuid,
+                ULONG mtu,
+                IpVersion ver)
 {
-    return InetPtonA(AF_INET6, s, &out) == 1;
+    MIB_IPINTERFACE_ROW row{};
+    InitializeIpInterfaceEntry(&row);
+    row.Family = fam(ver);
+    row.InterfaceLuid = ifLuid;
+    if (GetIpInterfaceEntry(&row) != NO_ERROR)
+    {
+        throw std::runtime_error("GetIpInterfaceEntry failed for mtu");
+    }
+
+    row.NlMtu = mtu;
+
+    DWORD err = SetIpInterfaceEntry(&row);
+    if (err == ERROR_INVALID_PARAMETER)
+    {
+        std::printf("[WARN] SetIpInterfaceEntry(%s mtu=%lu) rc=87, ignored\n",
+                    family_tag(ver), mtu);
+        return;
+    }
+    if (err != NO_ERROR)
+    {
+        throw std::runtime_error("SetIpInterfaceEntry(mtu) failed");
+    }
 }
 
-bool add_ipv6_address_on_if(const NET_LUID &ifLuid,
-                            const char *ip,
-                            UINT8 prefixLen)
+void add_ip_address_on_if(const NET_LUID &ifLuid,
+                          const char *ip,
+                          UINT8 prefixLen,
+                          IpVersion ver)
 {
     MIB_UNICASTIPADDRESS_ROW row{};
     InitializeUnicastIpAddressEntry(&row);
     row.InterfaceLuid = ifLuid;
-    row.Address.si_family = AF_INET6;
-    row.Address.Ipv6.sin6_family = AF_INET6;
-    row.Address.Ipv6.sin6_scope_id = 0;
-    if (!ipv6_from_string(ip, row.Address.Ipv6.sin6_addr)) return false;
+    row.Address.si_family = fam(ver);
+
+    if (ver == IpVersion::V6)
+    {
+        row.Address.Ipv6.sin6_family = AF_INET6;
+        row.Address.Ipv6.sin6_scope_id = 0;
+        if (!ipv6_from_string_(ip, row.Address.Ipv6.sin6_addr))
+        {
+            throw std::invalid_argument("add_ip_address_on_if: invalid IPv6");
+        }
+    }
+    else
+    {
+        if (!ipv4_from_string_(ip, row.Address.Ipv4.sin_addr))
+        {
+            throw std::invalid_argument("add_ip_address_on_if: invalid IPv4");
+        }
+    }
+
     row.PrefixOrigin = IpPrefixOriginManual;
     row.SuffixOrigin = IpSuffixOriginOther;
     row.ValidLifetime = 0xFFFFFFFF;
@@ -80,625 +133,424 @@ bool add_ipv6_address_on_if(const NET_LUID &ifLuid,
     row.OnLinkPrefixLength = prefixLen;
 
     DWORD err = CreateUnicastIpAddressEntry(&row);
-    if (err == NO_ERROR) return true;
-    if (err == ERROR_OBJECT_ALREADY_EXISTS) return SetUnicastIpAddressEntry(&row) == NO_ERROR;
-
-    std::printf("[ERR] CreateUnicastIpAddressEntry(v6 %s/%u) rc=%lu\n",
-                ip, static_cast<unsigned>(prefixLen), err);
-    return false;
+    if (err == NO_ERROR) return;
+    if (err == ERROR_OBJECT_ALREADY_EXISTS)
+    {
+        if (SetUnicastIpAddressEntry(&row) == NO_ERROR) return;
+    }
+    std::printf("[ERR] Create/SetUnicastIpAddressEntry(%s %s/%u) rc=%lu\n",
+                family_tag(ver), ip, static_cast<unsigned>(prefixLen), err);
+    throw std::runtime_error("add_ip_address_on_if failed");
 }
 
-bool set_if_metric_ipv6(const NET_LUID &ifLuid,
-                        ULONG metric)
-{
-    MIB_IPINTERFACE_ROW row{};
-    InitializeIpInterfaceEntry(&row);
-    row.Family = AF_INET6;
-    row.InterfaceLuid = ifLuid;
-    if (GetIpInterfaceEntry(&row) != NO_ERROR) return false;
-
-    row.UseAutomaticMetric = FALSE;
-    row.Metric = metric;
-
-    DWORD err = SetIpInterfaceEntry(&row);
-    if (err == ERROR_INVALID_PARAMETER)
-    {
-        std::printf("[WARN] SetIpInterfaceEntry(v6 metric=%lu) rc=87, ignored\n", metric);
-        return true;
-    }
-    if (err != NO_ERROR)
-    {
-        std::printf("[ERR]  SetIpInterfaceEntry(v6 metric=%lu) rc=%lu\n", metric, err);
-    }
-    return err == NO_ERROR;
-}
-
-bool set_if_mtu_ipv6(const NET_LUID &ifLuid,
-                     ULONG mtu)
-{
-    MIB_IPINTERFACE_ROW row{};
-    InitializeIpInterfaceEntry(&row);
-    row.Family = AF_INET6;
-    row.InterfaceLuid = ifLuid;
-    if (GetIpInterfaceEntry(&row) != NO_ERROR) return false;
-
-    row.NlMtu = mtu;
-
-    DWORD err = SetIpInterfaceEntry(&row);
-    if (err == ERROR_INVALID_PARAMETER)
-    {
-        std::printf("[WARN] SetIpInterfaceEntry(v6 mtu=%lu) rc=87, ignored\n", mtu);
-        return true;
-    }
-    if (err != NO_ERROR)
-    {
-        std::printf("[ERR]  SetIpInterfaceEntry(v6 mtu=%lu) rc=%lu\n", mtu, err);
-    }
-    return err == NO_ERROR;
-}
-
-bool add_onlink_host_route6(const NET_LUID &ifLuid,
-                            const char *host,
-                            ULONG metric)
+void add_onlink_host_route(const NET_LUID &ifLuid,
+                           const char *ip,
+                           ULONG metric,
+                           IpVersion ver)
 {
     MIB_IPFORWARD_ROW2 r{};
     InitializeIpForwardEntry(&r);
     r.InterfaceLuid = ifLuid;
-    r.DestinationPrefix.Prefix.si_family = AF_INET6;
-    r.DestinationPrefix.Prefix.Ipv6.sin6_family = AF_INET6;
-    if (!ipv6_from_string(host, r.DestinationPrefix.Prefix.Ipv6.sin6_addr)) return false;
-    r.DestinationPrefix.PrefixLength = 128;
-    r.NextHop.si_family = AF_INET6;
-    r.NextHop.Ipv6.sin6_family = AF_INET6;
-    std::memset(&r.NextHop.Ipv6.sin6_addr, 0, sizeof(IN6_ADDR)); // on-link
-    r.Metric = metric;
+
+    r.DestinationPrefix.Prefix.si_family = fam(ver);
+    if (ver == IpVersion::V6)
+    {
+        r.DestinationPrefix.Prefix.Ipv6.sin6_family = AF_INET6;
+        if (!ipv6_from_string_(ip, r.DestinationPrefix.Prefix.Ipv6.sin6_addr))
+        {
+            throw std::invalid_argument("add_onlink_host_route: invalid IPv6");
+        }
+        r.DestinationPrefix.PrefixLength = 128;
+        r.NextHop.si_family = AF_INET6;
+        r.NextHop.Ipv6.sin6_family = AF_INET6;
+        std::memset(&r.NextHop.Ipv6.sin6_addr, 0, sizeof(IN6_ADDR)); // on-link
+    }
+    else
+    {
+        if (!ipv4_from_string_(ip, r.DestinationPrefix.Prefix.Ipv4.sin_addr))
+        {
+            throw std::invalid_argument("add_onlink_host_route: invalid IPv4");
+        }
+        r.DestinationPrefix.PrefixLength = 32;
+        r.NextHop.si_family = AF_INET;           // on-link
+        r.NextHop.Ipv4.sin_addr.S_un.S_addr = 0; // 0.0.0.0
+    }
+
+    r.Metric   = metric;
     r.Protocol = MIB_IPPROTO_NETMGMT;
 
     DWORD err = CreateIpForwardEntry2(&r);
     if (!(err == NO_ERROR || err == ERROR_OBJECT_ALREADY_EXISTS))
     {
-        std::printf("[ERR] add_onlink_host_route6(%s) rc=%lu\n", host, err);
+        std::printf("[ERR] add_onlink_host_route(%s %s) rc=%lu\n", family_tag(ver), ip, err);
+        throw std::runtime_error("add_onlink_host_route failed");
     }
-    return (err == NO_ERROR || err == ERROR_OBJECT_ALREADY_EXISTS);
 }
 
-std::optional<MIB_IPFORWARD_ROW2> get_best_route_to6(const char *dest_ip6)
+void add_onlink_route(const NET_LUID &ifLuid,
+                      const char *prefix,
+                      UINT8 prefixLen,
+                      ULONG metric,
+                      IpVersion ver)
+{
+    MIB_IPFORWARD_ROW2 r{};
+    InitializeIpForwardEntry(&r);
+    r.InterfaceLuid = ifLuid;
+
+    r.DestinationPrefix.Prefix.si_family = fam(ver);
+    if (ver == IpVersion::V6)
+    {
+        r.DestinationPrefix.Prefix.Ipv6.sin6_family = AF_INET6;
+        if (!ipv6_from_string_(prefix, r.DestinationPrefix.Prefix.Ipv6.sin6_addr))
+        {
+            throw std::invalid_argument("add_onlink_route: invalid IPv6 prefix");
+        }
+    }
+    else
+    {
+        if (!ipv4_from_string_(prefix, r.DestinationPrefix.Prefix.Ipv4.sin_addr))
+        {
+            throw std::invalid_argument("add_onlink_route: invalid IPv4 prefix");
+        }
+    }
+    r.DestinationPrefix.PrefixLength = prefixLen;
+
+    r.NextHop.si_family = fam(ver); // on-link
+    if (ver == IpVersion::V6)
+    {
+        r.NextHop.Ipv6.sin6_family = AF_INET6;
+        std::memset(&r.NextHop.Ipv6.sin6_addr, 0, sizeof(IN6_ADDR));
+    }
+    else
+    {
+        r.NextHop.Ipv4.sin_addr.S_un.S_addr = 0;
+    }
+
+    r.Metric   = metric;
+    r.Protocol = MIB_IPPROTO_NETMGMT;
+
+    DWORD err = CreateIpForwardEntry2(&r);
+    if (!(err == NO_ERROR || err == ERROR_OBJECT_ALREADY_EXISTS))
+    {
+        std::printf("[ERR] add_onlink_route(%s %s/%u) rc=%lu\n",
+                    family_tag(ver), prefix, static_cast<unsigned>(prefixLen), err);
+        throw std::runtime_error("add_onlink_route failed");
+    }
+}
+
+std::optional<MIB_IPFORWARD_ROW2> get_best_route_to_generic(const char *dest_ip,
+                                                            IpVersion ver)
 {
     SOCKADDR_INET dst{};
-    dst.si_family = AF_INET6;
-    if (!ipv6_from_string(dest_ip6, dst.Ipv6.sin6_addr))
+    dst.si_family = fam(ver);
+    if (ver == IpVersion::V6)
     {
-        return std::nullopt;
+        if (!ipv6_from_string_(dest_ip, dst.Ipv6.sin6_addr))
+        {
+            throw std::invalid_argument("get_best_route_to_generic: invalid IPv6");
+        }
+    }
+    else
+    {
+        if (!ipv4_from_string_(dest_ip, dst.Ipv4.sin_addr))
+        {
+            throw std::invalid_argument("get_best_route_to_generic: invalid IPv4");
+        }
     }
 
     MIB_IPFORWARD_ROW2 route{};
-    if (GetBestRoute2(nullptr, 0, nullptr, &dst, 0, &route, nullptr) != NO_ERROR)
+    DWORD rc = GetBestRoute2(nullptr, 0, nullptr, &dst, 0, &route, nullptr);
+    if (rc == NO_ERROR)
     {
-        return std::nullopt;
+        return route;
     }
-    return route;
+    // нет маршрута — это не ошибка, просто отсутствует
+    return std::nullopt;
 }
 
-DWORD add_or_update_host_route_via6(const char *host6,
-                                    const MIB_IPFORWARD_ROW2 &via,
-                                    ULONG metric)
+std::optional<MIB_IPFORWARD_ROW2> fallback_default_route_excluding(const NET_LUID &exclude,
+                                                                   IpVersion ver)
 {
-    if (via.DestinationPrefix.Prefix.si_family != AF_INET6)
+    PMIB_IPFORWARD_TABLE2 tbl = nullptr;
+    DWORD rc = GetIpForwardTable2(fam(ver), &tbl);
+    if (rc != NO_ERROR)
     {
-        return ERROR_INVALID_PARAMETER;
+        throw std::runtime_error("GetIpForwardTable2 failed");
+    }
+
+    std::optional<MIB_IPFORWARD_ROW2> best;
+    for (ULONG i = 0; i < tbl->NumEntries; ++i)
+    {
+        const auto &row = tbl->Table[i];
+        if (row.InterfaceLuid.Value == exclude.Value)                         continue;
+        if (row.DestinationPrefix.Prefix.si_family != fam(ver))               continue;
+        if (row.DestinationPrefix.PrefixLength != 0)                          continue;
+        if (!best || row.Metric < best->Metric) best = row;
+    }
+    if (tbl) FreeMibTable(tbl);
+    return best;
+}
+
+void add_or_update_host_route_via(const char *host,
+                                  const MIB_IPFORWARD_ROW2 &via,
+                                  ULONG metric,
+                                  IpVersion ver)
+{
+    if (via.DestinationPrefix.Prefix.si_family != fam(ver))
+    {
+        throw std::invalid_argument("add_or_update_host_route_via: family mismatch");
     }
 
     MIB_IPFORWARD_ROW2 desired{};
     InitializeIpForwardEntry(&desired);
     desired.InterfaceLuid = via.InterfaceLuid;
-    desired.DestinationPrefix.Prefix.si_family = AF_INET6;
-    desired.DestinationPrefix.Prefix.Ipv6.sin6_family = AF_INET6;
-    if (!ipv6_from_string(host6, desired.DestinationPrefix.Prefix.Ipv6.sin6_addr))
-    {
-        return ERROR_INVALID_PARAMETER;
-    }
-    desired.DestinationPrefix.PrefixLength = 128;
 
-    IN6_ADDR zero{};
-    if (via.NextHop.si_family == AF_INET6 &&
-        std::memcmp(&via.NextHop.Ipv6.sin6_addr, &zero, sizeof zero) != 0)
+    desired.DestinationPrefix.Prefix.si_family = fam(ver);
+    if (ver == IpVersion::V6)
+    {
+        desired.DestinationPrefix.Prefix.Ipv6.sin6_family = AF_INET6;
+        if (!ipv6_from_string_(host, desired.DestinationPrefix.Prefix.Ipv6.sin6_addr))
+        {
+            throw std::invalid_argument("add_or_update_host_route_via: invalid IPv6");
+        }
+        desired.DestinationPrefix.PrefixLength = 128;
+    }
+    else
+    {
+        if (!ipv4_from_string_(host, desired.DestinationPrefix.Prefix.Ipv4.sin_addr))
+        {
+            throw std::invalid_argument("add_or_update_host_route_via: invalid IPv4");
+        }
+        desired.DestinationPrefix.PrefixLength = 32;
+    }
+
+    // next-hop: если в via задан gateway — используем его, иначе on-link
+    if (via.NextHop.si_family == fam(ver))
     {
         desired.NextHop = via.NextHop;
     }
     else
     {
-        desired.NextHop.si_family = AF_INET6;
-        desired.NextHop.Ipv6.sin6_family = AF_INET6;
-        std::memset(&desired.NextHop.Ipv6.sin6_addr, 0, sizeof(IN6_ADDR)); // on-link
+        desired.NextHop.si_family = fam(ver);
+        if (ver == IpVersion::V6)
+        {
+            desired.NextHop.Ipv6.sin6_family = AF_INET6;
+            std::memset(&desired.NextHop.Ipv6.sin6_addr, 0, sizeof(IN6_ADDR)); // on-link
+        }
+        else
+        {
+            desired.NextHop.Ipv4.sin_addr.S_un.S_addr = 0; // 0.0.0.0 on-link
+        }
     }
-    desired.Metric = metric;
+
+    desired.Metric   = metric;
     desired.Protocol = MIB_IPPROTO_NETMGMT;
 
+    // Пытаемся обновить существующую запись /32 или /128
     PMIB_IPFORWARD_TABLE2 tbl = nullptr;
-    if (GetIpForwardTable2(AF_INET6, &tbl) == NO_ERROR)
+    if (GetIpForwardTable2(fam(ver), &tbl) == NO_ERROR)
     {
         for (ULONG i = 0; i < tbl->NumEntries; ++i)
         {
             auto &row = tbl->Table[i];
-            if (row.DestinationPrefix.Prefix.si_family == AF_INET6 &&
-                row.DestinationPrefix.PrefixLength == 128 &&
-                std::memcmp(&row.DestinationPrefix.Prefix.Ipv6.sin6_addr,
-                            &desired.DestinationPrefix.Prefix.Ipv6.sin6_addr,
-                            sizeof(IN6_ADDR)) == 0)
+            if (row.DestinationPrefix.Prefix.si_family != fam(ver)) continue;
+            if (row.DestinationPrefix.PrefixLength != (ver == IpVersion::V6 ? 128 : 32)) continue;
+
+            bool same = false;
+            if (ver == IpVersion::V6)
+            {
+                same = (std::memcmp(&row.DestinationPrefix.Prefix.Ipv6.sin6_addr,
+                                    &desired.DestinationPrefix.Prefix.Ipv6.sin6_addr,
+                                    sizeof(IN6_ADDR)) == 0);
+            }
+            else
+            {
+                same = (row.DestinationPrefix.Prefix.Ipv4.sin_addr.S_un.S_addr ==
+                        desired.DestinationPrefix.Prefix.Ipv4.sin_addr.S_un.S_addr);
+            }
+
+            if (same)
             {
                 row.InterfaceLuid = desired.InterfaceLuid;
-                row.NextHop = desired.NextHop;
-                row.Metric = desired.Metric;
-                row.Protocol = MIB_IPPROTO_NETMGMT;
+                row.NextHop       = desired.NextHop;
+                row.Metric        = desired.Metric;
+                row.Protocol      = MIB_IPPROTO_NETMGMT;
                 DWORD rc = SetIpForwardEntry2(&row);
+                FreeMibTable(tbl);
                 if (rc != NO_ERROR)
                 {
-                    std::printf("[ERR] SetIpForwardEntry2(v6 /128) rc=%lu\n", rc);
+                    throw std::runtime_error("SetIpForwardEntry2(/host) failed");
                 }
-                FreeMibTable(tbl);
-                return rc;
+                return;
             }
         }
         FreeMibTable(tbl);
     }
 
-    DWORD rc = CreateIpForwardEntry2(&desired);
-    if (rc != NO_ERROR && rc != ERROR_OBJECT_ALREADY_EXISTS)
-    {
-        std::printf("[ERR] CreateIpForwardEntry2(v6 /128) rc=%lu\n", rc);
-    }
-    return rc;
-}
-
-bool add_onlink_route_v6(const NET_LUID &ifLuid,
-                         const char *prefix,
-                         UINT8 prefixLen,
-                         ULONG metric)
-{
-    MIB_IPFORWARD_ROW2 r{};
-    InitializeIpForwardEntry(&r);
-    r.InterfaceLuid = ifLuid;
-
-    r.DestinationPrefix.Prefix.si_family = AF_INET6;
-    r.DestinationPrefix.Prefix.Ipv6.sin6_family = AF_INET6;
-    if (!ipv6_from_string(prefix, r.DestinationPrefix.Prefix.Ipv6.sin6_addr)) return false;
-    r.DestinationPrefix.PrefixLength = prefixLen;
-
-    r.NextHop.si_family = AF_INET6;
-    r.NextHop.Ipv6.sin6_family = AF_INET6;
-    std::memset(&r.NextHop.Ipv6.sin6_addr, 0, sizeof(IN6_ADDR)); // on-link
-
-    r.Metric = metric;
-    r.Protocol = MIB_IPPROTO_NETMGMT;
-
-    DWORD err = CreateIpForwardEntry2(&r);
-    if (!(err == NO_ERROR || err == ERROR_OBJECT_ALREADY_EXISTS))
-    {
-        std::printf("[ERR] add_onlink_route_v6(%s/%u) rc=%lu\n",
-                    prefix, static_cast<unsigned>(prefixLen), err);
-    }
-    return (err == NO_ERROR || err == ERROR_OBJECT_ALREADY_EXISTS);
-}
-
-// ================================ IPv4 ==================================
-
-bool ipv4_from_string(const char *s,
-                      IN_ADDR &out)
-{
-    return InetPtonA(AF_INET, s, &out) == 1;
-}
-
-bool add_ipv4_address_on_if(const NET_LUID &ifLuid,
-                            const char *ip,
-                            UINT8 prefixLen)
-{
-    MIB_UNICASTIPADDRESS_ROW row{};
-    InitializeUnicastIpAddressEntry(&row);
-    row.InterfaceLuid = ifLuid;
-    row.Address.si_family = AF_INET;
-    if (!ipv4_from_string(ip, row.Address.Ipv4.sin_addr)) return false;
-    row.PrefixOrigin = IpPrefixOriginManual;
-    row.SuffixOrigin = IpSuffixOriginOther;
-    row.ValidLifetime = 0xFFFFFFFF;
-    row.PreferredLifetime = 0xFFFFFFFF;
-    row.DadState = IpDadStatePreferred;
-    row.OnLinkPrefixLength = prefixLen;
-
-    DWORD err = CreateUnicastIpAddressEntry(&row);
-    if (err == NO_ERROR) return true;
-    if (err == ERROR_OBJECT_ALREADY_EXISTS) return SetUnicastIpAddressEntry(&row) == NO_ERROR;
-
-    std::printf("[ERR] CreateUnicastIpAddressEntry(v4 %s/%u) rc=%lu\n",
-                ip, static_cast<unsigned>(prefixLen), err);
-    return false;
-}
-
-bool add_onlink_host_route(const NET_LUID &ifLuid,
-                           const char *host,
-                           ULONG metric)
-{
-    MIB_IPFORWARD_ROW2 r{};
-    InitializeIpForwardEntry(&r);
-    r.InterfaceLuid = ifLuid;
-    r.DestinationPrefix.Prefix.si_family = AF_INET;
-    if (!ipv4_from_string(host, r.DestinationPrefix.Prefix.Ipv4.sin_addr)) return false;
-    r.DestinationPrefix.PrefixLength = 32;
-    r.NextHop.si_family = AF_INET;           // on-link
-    r.NextHop.Ipv4.sin_addr.S_un.S_addr = 0; // 0.0.0.0
-    r.Metric = metric;
-    r.Protocol = MIB_IPPROTO_NETMGMT;
-
-    DWORD err = CreateIpForwardEntry2(&r);
-    if (!(err == NO_ERROR || err == ERROR_OBJECT_ALREADY_EXISTS))
-    {
-        std::printf("[ERR] add_onlink_host_route(%s) rc=%lu\n", host, err);
-    }
-    return (err == NO_ERROR || err == ERROR_OBJECT_ALREADY_EXISTS);
-}
-
-std::optional<MIB_IPFORWARD_ROW2> get_best_route_to(const char *dest_ip)
-{
-    SOCKADDR_INET dst{};
-    dst.si_family = AF_INET;
-    if (!ipv4_from_string(dest_ip, dst.Ipv4.sin_addr))
-    {
-        return std::nullopt;
-    }
-
-    MIB_IPFORWARD_ROW2 route{};
-    if (GetBestRoute2(nullptr, 0, nullptr, &dst, 0, &route, nullptr) != NO_ERROR)
-    {
-        return std::nullopt;
-    }
-    return route;
-}
-
-DWORD add_or_update_host_route_via(const char *host,
-                                   const MIB_IPFORWARD_ROW2 &via,
-                                   ULONG metric)
-{
-    if (via.DestinationPrefix.Prefix.si_family != AF_INET)
-    {
-        return ERROR_INVALID_PARAMETER;
-    }
-
-    MIB_IPFORWARD_ROW2 desired{};
-    InitializeIpForwardEntry(&desired);
-    desired.InterfaceLuid = via.InterfaceLuid;
-    desired.DestinationPrefix.Prefix.si_family = AF_INET;
-    if (!ipv4_from_string(host, desired.DestinationPrefix.Prefix.Ipv4.sin_addr))
-    {
-        return ERROR_INVALID_PARAMETER;
-    }
-    desired.DestinationPrefix.PrefixLength = 32;
-
-    if (via.NextHop.si_family == AF_INET && via.NextHop.Ipv4.sin_addr.S_un.S_addr != 0)
-    {
-        desired.NextHop = via.NextHop; // через конкретный шлюз
-    }
-    else
-    {
-        desired.NextHop.si_family = AF_INET;
-        desired.NextHop.Ipv4.sin_addr.S_un.S_addr = 0; // on-link
-    }
-    desired.Metric = metric;
-    desired.Protocol = MIB_IPPROTO_NETMGMT;
-
-    PMIB_IPFORWARD_TABLE2 tbl = nullptr;
-    if (GetIpForwardTable2(AF_INET, &tbl) == NO_ERROR)
-    {
-        for (ULONG i = 0; i < tbl->NumEntries; ++i)
-        {
-            auto &row = tbl->Table[i];
-            if (row.DestinationPrefix.Prefix.si_family == AF_INET &&
-                row.DestinationPrefix.PrefixLength == 32 &&
-                row.DestinationPrefix.Prefix.Ipv4.sin_addr.S_un.S_addr ==
-                    desired.DestinationPrefix.Prefix.Ipv4.sin_addr.S_un.S_addr)
-            {
-                row.InterfaceLuid = desired.InterfaceLuid;
-                row.NextHop = desired.NextHop;
-                row.Metric = desired.Metric;
-                row.Protocol = MIB_IPPROTO_NETMGMT;
-                DWORD rc = SetIpForwardEntry2(&row);
-                if (rc != NO_ERROR)
-                {
-                    std::printf("[ERR] SetIpForwardEntry2(v4 /32) rc=%lu\n", rc);
-                }
-                FreeMibTable(tbl);
-                return rc;
-            }
-        }
-        FreeMibTable(tbl);
-    }
-
+    // Иначе создаём
     DWORD rc = CreateIpForwardEntry2(&desired);
     if (rc == NO_ERROR || rc == ERROR_OBJECT_ALREADY_EXISTS)
     {
-        return rc;
+        return;
     }
 
-    // Legacy fallback (Win7)
+    // Fallback для Win7 (только IPv4)
+    if (ver == IpVersion::V6)
+    {
+        std::printf("[ERR] CreateIpForwardEntry2(v6 /128) rc=%lu\n", rc);
+        throw std::runtime_error("CreateIpForwardEntry2(v6 /128) failed");
+    }
+
     std::printf("[WARN] CreateIpForwardEntry2(v4 /32) rc=%lu, trying legacy API...\n", rc);
 
     MIB_IPFORWARDROW r{};
-    r.dwForwardDest = desired.DestinationPrefix.Prefix.Ipv4.sin_addr.S_un.S_addr;
-    r.dwForwardMask = 0xFFFFFFFF;
+    r.dwForwardDest   = desired.DestinationPrefix.Prefix.Ipv4.sin_addr.S_un.S_addr;
+    r.dwForwardMask   = 0xFFFFFFFF;
     r.dwForwardPolicy = 0;
     r.dwForwardNextHop = desired.NextHop.Ipv4.sin_addr.S_un.S_addr; // 0 = on-link
     r.dwForwardIfIndex = via.InterfaceIndex;                        // IfIndex из via
-    r.dwForwardType = (r.dwForwardNextHop == 0) ? 3 /*DIRECT*/ : 4 /*INDIRECT*/;
-    r.dwForwardProto = MIB_IPPROTO_NETMGMT;
+    r.dwForwardType    = (r.dwForwardNextHop == 0) ? 3 /*DIRECT*/ : 4 /*INDIRECT*/;
+    r.dwForwardProto   = MIB_IPPROTO_NETMGMT;
     r.dwForwardMetric1 = metric;
 
     DWORD rc2 = CreateIpForwardEntry(&r);
-    if (rc2 != NO_ERROR && rc2 != ERROR_OBJECT_ALREADY_EXISTS)
+    if (!(rc2 == NO_ERROR || rc2 == ERROR_OBJECT_ALREADY_EXISTS))
     {
         std::printf("[ERR] CreateIpForwardEntry(legacy v4 /32) rc=%lu\n", rc2);
+        throw std::runtime_error("CreateIpForwardEntry(legacy v4 /32) failed");
     }
-    else
-    {
-        std::printf("[OK ] legacy v4 /32 pinned via IfIndex=%u\n", r.dwForwardIfIndex);
-    }
-    return rc2;
 }
 
-bool set_if_metric_ipv4(const NET_LUID &ifLuid,
-                        ULONG metric)
-{
-    MIB_IPINTERFACE_ROW row{};
-    InitializeIpInterfaceEntry(&row);
-    row.Family = AF_INET;
-    row.InterfaceLuid = ifLuid;
-    if (GetIpInterfaceEntry(&row) != NO_ERROR) return false;
-
-    row.UseAutomaticMetric = FALSE;
-    row.Metric = metric;
-
-    DWORD err = SetIpInterfaceEntry(&row);
-    if (err == ERROR_INVALID_PARAMETER)
-    {
-        std::printf("[WARN] SetIpInterfaceEntry(v4 metric=%lu) rc=87, ignored\n", metric);
-        return true;
-    }
-    if (err != NO_ERROR)
-    {
-        std::printf("[ERR]  SetIpInterfaceEntry(v4 metric=%lu) rc=%lu\n", metric, err);
-    }
-    return err == NO_ERROR;
-}
-
-bool set_if_mtu_ipv4(const NET_LUID &ifLuid,
-                     ULONG mtu)
-{
-    MIB_IPINTERFACE_ROW row{};
-    InitializeIpInterfaceEntry(&row);
-    row.Family = AF_INET;
-    row.InterfaceLuid = ifLuid;
-    if (GetIpInterfaceEntry(&row) != NO_ERROR) return false;
-
-    row.NlMtu = mtu;
-
-    DWORD err = SetIpInterfaceEntry(&row);
-    if (err == ERROR_INVALID_PARAMETER)
-    {
-        std::printf("[WARN] SetIpInterfaceEntry(v4 mtu=%lu) rc=87, ignored\n", mtu);
-        return true;
-    }
-    if (err != NO_ERROR)
-    {
-        std::printf("[ERR]  SetIpInterfaceEntry(v4 mtu=%lu) rc=%lu\n", mtu, err);
-    }
-    return err == NO_ERROR;
-}
-
-bool add_onlink_route_v4(const NET_LUID &ifLuid,
-                         const char *prefix,
-                         UINT8 prefixLen,
-                         ULONG metric)
+void add_route_via_gateway(const NET_LUID &ifLuid,
+                           const char *prefix,
+                           UINT8 prefixLen,
+                           const char *gateway,
+                           ULONG metric,
+                           IpVersion ver)
 {
     MIB_IPFORWARD_ROW2 r{};
     InitializeIpForwardEntry(&r);
     r.InterfaceLuid = ifLuid;
-    r.DestinationPrefix.Prefix.si_family = AF_INET;
-    if (!ipv4_from_string(prefix, r.DestinationPrefix.Prefix.Ipv4.sin_addr)) return false;
+
+    r.DestinationPrefix.Prefix.si_family = fam(ver);
+    if (ver == IpVersion::V6)
+    {
+        r.DestinationPrefix.Prefix.Ipv6.sin6_family = AF_INET6;
+        if (!ipv6_from_string_(prefix, r.DestinationPrefix.Prefix.Ipv6.sin6_addr))
+        {
+            throw std::invalid_argument("add_route_via_gateway: invalid IPv6 prefix");
+        }
+    }
+    else
+    {
+        if (!ipv4_from_string_(prefix, r.DestinationPrefix.Prefix.Ipv4.sin_addr))
+        {
+            throw std::invalid_argument("add_route_via_gateway: invalid IPv4 prefix");
+        }
+    }
     r.DestinationPrefix.PrefixLength = prefixLen;
-    r.NextHop.si_family = AF_INET;           // on-link
-    r.NextHop.Ipv4.sin_addr.S_un.S_addr = 0; // 0.0.0.0
-    r.Metric = metric;
+
+    r.NextHop.si_family = fam(ver);
+    if (ver == IpVersion::V6)
+    {
+        r.NextHop.Ipv6.sin6_family = AF_INET6;
+        if (!ipv6_from_string_(gateway, r.NextHop.Ipv6.sin6_addr))
+        {
+            throw std::invalid_argument("add_route_via_gateway: invalid IPv6 gateway");
+        }
+    }
+    else
+    {
+        if (!ipv4_from_string_(gateway, r.NextHop.Ipv4.sin_addr))
+        {
+            throw std::invalid_argument("add_route_via_gateway: invalid IPv4 gateway");
+        }
+    }
+
+    r.Metric   = metric;
     r.Protocol = MIB_IPPROTO_NETMGMT;
 
     DWORD err = CreateIpForwardEntry2(&r);
     if (!(err == NO_ERROR || err == ERROR_OBJECT_ALREADY_EXISTS))
     {
-        std::printf("[ERR] add_onlink_route_v4(%s/%u) rc=%lu\n",
-                    prefix, static_cast<unsigned>(prefixLen), err);
+        std::printf("[ERR] add_route_via_gateway(%s %s/%u via %s) rc=%lu\n",
+                    family_tag(ver), prefix, static_cast<unsigned>(prefixLen), gateway, err);
+        throw std::runtime_error("add_route_via_gateway failed");
     }
-    return (err == NO_ERROR || err == ERROR_OBJECT_ALREADY_EXISTS);
 }
 
-// ============================== PHASES ===============================
+// ============================== ONE-FAMILY FACADE ===============================
 
-static const char *LOCAL4 = "10.8.0.2";
-static const char *PEER4  = "10.8.0.1";
-static const char *LOCAL6 = "fd00:dead:beef::2";
-static const char *PEER6  = "fd00:dead:beef::1";
-
-int ConfigureNetwork_Base(WINTUN_ADAPTER_HANDLE adapter)
+void ConfigureNetwork(WINTUN_ADAPTER_HANDLE adapter,
+                      const std::string &server_ip,
+                      IpVersion ver)
 {
+    if (!adapter)
+    {
+        throw std::invalid_argument("ConfigureNetwork: null adapter");
+    }
+
     NET_LUID luid{};
     Wintun.GetLuid(adapter, &luid);
 
-    // MTU
-    set_if_mtu_ipv4(luid, 1400);
-    set_if_mtu_ipv6(luid, 1400);
-
-    // IPv4: присваиваем адрес как /30 (point-to-point), а не /32
-    if (!add_ipv4_address_on_if(luid, LOCAL4, 30))
+    // MTU + адрес + метрика
+    set_if_mtu(luid, 1400, ver);
+    if (ver == IpVersion::V6)
     {
-        std::printf("[FATAL] failed to assign IPv4 %s/30 on Wintun\n", LOCAL4);
-        return 1;
+        // IPv6: присваиваем адрес как /64 (или /127 для p2p), а не /128
+        add_ip_address_on_if(luid, LOCAL6, 64, IpVersion::V6);
+        set_if_metric(luid, 1, IpVersion::V6);
+    }
+    else
+    {
+        // IPv4: присваиваем адрес как /30 (point-to-point), а не /32
+        add_ip_address_on_if(luid, LOCAL4, 30, IpVersion::V4);
+        set_if_metric(luid, 1, IpVersion::V4);
     }
 
-    // IPv6: присваиваем адрес как /64 (или /127 для p2p), а не /128
-    add_ipv6_address_on_if(luid, LOCAL6, 64);
+    // Пин до сервера (только если семейство совпадает с server_ip)
+    const bool server_is_v6 = is_v6_string(server_ip);
+    const bool need_pin = ((ver == IpVersion::V6) == server_is_v6);
+    bool pinned = false;
 
-    // Метрики интерфейса (самые низкие для приоритета)
-    set_if_metric_ipv4(luid, 1);
-    set_if_metric_ipv6(luid, 1);
-
-    std::printf("[OK ] Base configured (IPs as subnets, MTU, metrics)\n");
-    return 0;
-}
-
-bool ConfigureNetwork_PinServer(WINTUN_ADAPTER_HANDLE adapter,
-                                const std::string &server_ip)
-{
-    NET_LUID luid{};
-    Wintun.GetLuid(adapter, &luid);
-
-    const bool is_v6 = (server_ip.find(':') != std::string::npos);
-
-    if (!is_v6)
+    if (need_pin)
     {
-        auto best = get_best_route_to(server_ip.c_str());
-        if (!best) best = fallback_default_route_excluding(luid);
+        auto best = get_best_route_to_generic(server_ip.c_str(), ver);
         if (!best)
         {
-            std::printf("[WARN] no v4 route to server before switch\n");
-            return false;
+            best = fallback_default_route_excluding(luid, ver);
         }
 
-        DWORD rc = add_or_update_host_route_via(server_ip.c_str(), *best, 1);
-        if (rc == NO_ERROR || rc == ERROR_OBJECT_ALREADY_EXISTS)
+        if (best)
         {
-            std::printf("[OK ] pinned v4 /32 to %s via IfLuid=%llu\n",
+            add_or_update_host_route_via(server_ip.c_str(), *best, 1, ver);
+            std::printf("[OK ] pinned %s host route to %s via IfLuid=%llu\n",
+                        family_tag(ver),
                         server_ip.c_str(),
                         static_cast<unsigned long long>(best->InterfaceLuid.Value));
-            return true;
+            pinned = true;
         }
-
-        std::printf("[ERR] pin v4 /32 to %s rc=%lu\n", server_ip.c_str(), rc);
-        return false;
-    }
-    else
-    {
-        auto best6 = get_best_route_to6(server_ip.c_str());
-        if (!best6) best6 = fallback_default_route6_excluding(luid);
-        if (!best6)
+        else
         {
-            std::printf("[WARN] no v6 route to server before switch\n");
-            return false;
+            std::printf("[WARN] no %s route to server before switch\n", family_tag(ver));
         }
+    }
 
-        DWORD rc = add_or_update_host_route_via6(server_ip.c_str(), *best6, 1);
-        if (rc == NO_ERROR || rc == ERROR_OBJECT_ALREADY_EXISTS)
+    // Активируем split-default через VPN peer — только если pinned успешно
+    if (pinned)
+    {
+        if (ver == IpVersion::V6)
         {
-            std::printf("[OK ] pinned v6 /128 to %s via IfLuid=%llu\n",
-                        server_ip.c_str(),
-                        static_cast<unsigned long long>(best6->InterfaceLuid.Value));
-            return true;
+            add_route_via_gateway(luid, "::",      1, PEER6, 1, IpVersion::V6);
+            add_route_via_gateway(luid, "8000::",  1, PEER6, 1, IpVersion::V6);
         }
-
-        std::printf("[ERR] pin v6 /128 to %s rc=%lu\n", server_ip.c_str(), rc);
-        return false;
+        else
+        {
+            add_route_via_gateway(luid, "0.0.0.0",   1, PEER4, 1, IpVersion::V4);
+            add_route_via_gateway(luid, "128.0.0.0", 1, PEER4, 1, IpVersion::V4);
+        }
+        std::printf("[OK ] defaults activated via VPN gateway (%s)\n", family_tag(ver));
     }
 }
 
-bool ConfigureNetwork_ActivateDefaults(WINTUN_ADAPTER_HANDLE adapter)
-{
-    NET_LUID luid{};
-    Wintun.GetLuid(adapter, &luid);
-
-    // IPv4: split-default через VPN peer
-    bool ok41 = add_route_via_gateway_v4(luid, "0.0.0.0", 1, PEER4, 1);
-    bool ok42 = add_route_via_gateway_v4(luid, "128.0.0.0", 1, PEER4, 1);
-
-    // IPv6: split-default через VPN peer
-    bool ok61 = add_route_via_gateway_v6(luid, "::", 1, PEER6, 1);
-    bool ok62 = add_route_via_gateway_v6(luid, "8000::", 1, PEER6, 1);
-
-    if (!(ok41 && ok42))
-    {
-        std::printf("[ERR] v4 split-default failed (0/1=%d 128/1=%d)\n", ok41 ? 1 : 0, ok42 ? 1 : 0);
-    }
-    if (!(ok61 && ok62))
-    {
-        std::printf("[ERR] v6 split-default failed (::/1=%d 8000::/1=%d)\n", ok61 ? 1 : 0, ok62 ? 1 : 0);
-    }
-
-    const bool any = (ok41 && ok42) || (ok61 && ok62);
-    if (any)
-    {
-        std::printf("[OK ] defaults activated via VPN gateway (v4:%d v6:%d)\n",
-                    (ok41 && ok42) ? 1 : 0, (ok61 && ok62) ? 1 : 0);
-    }
-    return any;
-}
-
-// Новые функции для маршрутизации через VPN gateway
-
-bool add_route_via_gateway_v4(const NET_LUID &ifLuid,
-                              const char *prefix,
-                              UINT8 prefixLen,
-                              const char *gateway_ip,
-                              ULONG metric)
-{
-    MIB_IPFORWARD_ROW2 r{};
-    InitializeIpForwardEntry(&r);
-    r.InterfaceLuid = ifLuid;
-
-    // Destination
-    r.DestinationPrefix.Prefix.si_family = AF_INET;
-    if (!ipv4_from_string(prefix, r.DestinationPrefix.Prefix.Ipv4.sin_addr)) return false;
-    r.DestinationPrefix.PrefixLength = prefixLen;
-
-    // Gateway (next-hop)
-    r.NextHop.si_family = AF_INET;
-    if (!ipv4_from_string(gateway_ip, r.NextHop.Ipv4.sin_addr)) return false;
-
-    r.Metric = metric;
-    r.Protocol = MIB_IPPROTO_NETMGMT;
-
-    DWORD err = CreateIpForwardEntry2(&r);
-    if (!(err == NO_ERROR || err == ERROR_OBJECT_ALREADY_EXISTS))
-    {
-        std::printf("[ERR] add_route_via_gateway_v4(%s/%u via %s) rc=%lu\n",
-                    prefix, static_cast<unsigned>(prefixLen), gateway_ip, err);
-    }
-    return (err == NO_ERROR || err == ERROR_OBJECT_ALREADY_EXISTS);
-}
-
-bool add_route_via_gateway_v6(const NET_LUID &ifLuid,
-                              const char *prefix,
-                              UINT8 prefixLen,
-                              const char *gateway_ip6,
-                              ULONG metric)
-{
-    MIB_IPFORWARD_ROW2 r{};
-    InitializeIpForwardEntry(&r);
-    r.InterfaceLuid = ifLuid;
-
-    // Destination
-    r.DestinationPrefix.Prefix.si_family = AF_INET6;
-    r.DestinationPrefix.Prefix.Ipv6.sin6_family = AF_INET6;
-    if (!ipv6_from_string(prefix, r.DestinationPrefix.Prefix.Ipv6.sin6_addr)) return false;
-    r.DestinationPrefix.PrefixLength = prefixLen;
-
-    // Gateway (next-hop)
-    r.NextHop.si_family = AF_INET6;
-    r.NextHop.Ipv6.sin6_family = AF_INET6;
-    if (!ipv6_from_string(gateway_ip6, r.NextHop.Ipv6.sin6_addr)) return false;
-
-    r.Metric = metric;
-    r.Protocol = MIB_IPPROTO_NETMGMT;
-
-    DWORD err = CreateIpForwardEntry2(&r);
-    if (!(err == NO_ERROR || err == ERROR_OBJECT_ALREADY_EXISTS))
-    {
-        std::printf("[ERR] add_route_via_gateway_v6(%s/%u via %s) rc=%lu\n",
-                    prefix, static_cast<unsigned>(prefixLen), gateway_ip6, err);
-    }
-    return (err == NO_ERROR || err == ERROR_OBJECT_ALREADY_EXISTS);
-}
-
-}
+} // namespace Network

@@ -212,41 +212,22 @@ int main(int argc,
 
     auto reapply = [&]()
     {
-        if (Network::ConfigureNetwork_Base(adapter) != 0)
+        try
         {
-            std::cerr << "ConfigureNetwork_Base failed\n";
+            Network::ConfigureNetwork(adapter, server_ip, Network::IpVersion::V4);
+            Network::ConfigureNetwork(adapter, server_ip, Network::IpVersion::V6);
+        }
+        catch (const std::exception &e)
+        {
+            std::cerr << "ConfigureNetwork error: " << e.what() << "\n";
             Wintun.Close(adapter);
             PluginWrapper::Unload(plugin);
             WSACleanup();
-        }
-
-        bool pin_ok_local = Network::ConfigureNetwork_PinServer(adapter, server_ip);
-        if (!pin_ok_local)
-        {
-            std::cerr << "[ABORT SWITCH] pin to server failed — leaving default routes unchanged\n";
-        }
-        else
-        {
-            if (!Network::ConfigureNetwork_ActivateDefaults(adapter))
-            {
-                std::cerr << "ConfigureNetwork_ActivateDefaults failed (continuing)\n";
-            }
         }
     };
 
     reapply();
     NetWatcher nw(reapply, std::chrono::milliseconds(1500));
-
-    if (Network::ConfigureNetwork_Base(adapter) != 0)
-    {
-        std::cerr << "ConfigureNetwork_Base failed\n";
-        Wintun.Close(adapter);
-        PluginWrapper::Unload(plugin);
-        WSACleanup();
-        return 1;
-    }
-
-    bool pin_ok = Network::ConfigureNetwork_PinServer(adapter, server_ip);
 
     WINTUN_SESSION_HANDLE sess = Wintun.Start(adapter, 0x20000);
     if (!sess)
