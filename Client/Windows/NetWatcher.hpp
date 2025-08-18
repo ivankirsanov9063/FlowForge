@@ -1,44 +1,113 @@
 #pragma once
-// NetWatcher.hpp — Windows-only watcher for network changes.
-// Подписка на NotifyIpInterfaceChange/NotifyRouteChange2 с дебаунсом,
-// вызов пользовательского ReapplyFn при изменениях сети.
+// NetWatcher.hpp — RAII вотчер изменений сети для Windows.
 
 #include <chrono>
 #include <functional>
+#include <stdexcept>
 
-namespace NetWatcher
+/**
+ * @brief RAII-класс: следит за изменениями сети и вызывает колбэк после дебаунса.
+ *
+ * Конструктор создаёт события/подписки и запускает рабочий поток.
+ * Деструктор автоматически отписывается и останавливает поток.
+ */
+class NetWatcher
 {
-
-    /// Ваш обработчик переустановки сетевых настроек (маршруты, DNS, метрики и т.п.)
+public:
+    /**
+     * @brief Тип пользовательского колбэка, вызываемого после «тишины» (debounce).
+     */
     using ReapplyFn = std::function<void()>;
 
-    // Opaque-хэндлы, чтобы не тянуть <Windows.h> в заголовок
-    struct Watcher
-    {
-        void    *hStop       = nullptr; // HANDLE (manual-reset)
-        void    *hKick       = nullptr; // HANDLE (auto-reset)
-        void    *hThread     = nullptr; // HANDLE
-        void    *hIfNotif    = nullptr; // HANDLE (NotifyIpInterfaceChange)
-        void    *hRouteNotif = nullptr; // HANDLE (NotifyRouteChange2)
-        unsigned debounce_ms = 1500;    // окно коалессации событий, мс
-        ReapplyFn reapply;              // вызывается после дебаунса
-    };
-
     /**
-     * @brief Запускает вотчер сетевых изменений.
-     * @param w        Экземпляр вотчера (инициализируется в процессе).
-     * @param reapply  Колбэк, вызываемый после серии событий с дебаунсом.
+     * @brief Запустить вотчер.
+     * @param reapply  Колбэк (может быть пустым — тогда ничего не вызовется).
      * @param debounce Интервал дебаунса (по умолчанию 1500 мс).
-     * @return true при успешном запуске, иначе false.
+     * @throw std::runtime_error Ошибка WinAPI/регистрации/создания потока.
      */
-    bool StartNetWatcher(Watcher &w,
-                         ReapplyFn reapply,
-                         std::chrono::milliseconds debounce = std::chrono::milliseconds(1500)) noexcept;
+    explicit NetWatcher(ReapplyFn reapply,
+                        std::chrono::milliseconds debounce = std::chrono::milliseconds(1500));
 
     /**
-     * @brief Останавливает вотчер и освобождает ресурсы.
-     * @param w Экземпляр вотчера.
+     * @brief Деструктор. Останавливает вотчер; исключения подавляются.
      */
-    void StopNetWatcher(Watcher &w) noexcept;
+    ~NetWatcher();
 
-} // namespace NetWatcher
+    /**
+     * @brief Копирование запрещено (ресурсы уникальны).
+     */
+    NetWatcher(const NetWatcher &) = delete;
+
+    /**
+     * @brief Копирующее присваивание запрещено.
+     */
+    NetWatcher &operator=(const NetWatcher &) = delete;
+
+    /**
+     * @brief Перемещающий конструктор: переносит владение ресурсами.
+     * @param other Источник перемещения.
+     */
+    NetWatcher(NetWatcher &&other) noexcept;
+
+    /**
+     * @brief Перемещающее присваивание: сворачивает текущее состояние и принимает ресурсы other.
+     * @param other Источник перемещения.
+     * @return *this
+     */
+    NetWatcher &operator=(NetWatcher &&other) noexcept;
+
+    /**
+     * @brief Остановить вотчер вручную (идемпотентно).
+     * @throw std::runtime_error Сбой остановки/ожидания потока/закрытия ресурсов.
+     */
+    void Stop();
+
+    /**
+     * @brief Принудительно «пнуть» вотчер: просигналить событие коалессации.
+     */
+    void Kick() noexcept;
+
+    /**
+     * @brief Проверить, запущен ли вотчер.
+     * @return true, если поток и подписки активны.
+     */
+    bool IsRunning() const noexcept;
+
+private:
+    /** @brief HANDLE (manual-reset) события остановки (как void*, без windows.h в .hpp). */
+    void *h_stop_ = nullptr;
+    /** @brief HANDLE (auto-reset) события «пинка». */
+    void *h_kick_ = nullptr;
+    /** @brief HANDLE рабочего потока. */
+    void *h_thread_ = nullptr;
+    /** @brief HANDLE подписки NotifyIpInterfaceChange. */
+    void *h_if_notif_ = nullptr;
+    /** @brief HANDLE подписки NotifyRouteChange2. */
+    void *h_route_notif_ = nullptr;
+
+    /** @brief Окно коалессации событий в миллисекундах. */
+    unsigned debounce_ms_ = 1500;
+    /** @brief Пользовательский колбэк. */
+    ReapplyFn reapply_;
+    /** @brief Флаг инициализации (ресурсы подняты). */
+    bool started_ = false;
+
+    /**
+     * @brief Запуск ядра: создать события, подписаться, поднять поток.
+     * @throw std::runtime_error При любой ошибке WinAPI.
+     */
+    void StartCore();
+
+    /**
+     * @brief Останов ядра: отписки, остановка потока, закрытие хендлов.
+     * @throw std::runtime_error При сбоях остановки.
+     */
+    void StopCore();
+
+    /**
+     * @brief Рабочая функция потока (LPTHREAD_START_ROUTINE).
+     * @param param this
+     * @return 0
+     */
+    static unsigned long __stdcall ThreadMain(void *param);
+};

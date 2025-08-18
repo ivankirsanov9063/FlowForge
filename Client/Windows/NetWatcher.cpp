@@ -1,11 +1,15 @@
+// NetWatcher.cpp — реализация RAII вотчера сетевых изменений для Windows.
+
 #ifndef _WIN32_WINNT
 #define _WIN32_WINNT 0x0601 // минимум Windows 7
 #endif
 #ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
 #endif
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
 
-// ВАЖНО: сначала winsock2/ws2tcpip, потом windows.h
 #include <winsock2.h>
 #include <ws2tcpip.h>
 #include <Windows.h>
@@ -18,92 +22,132 @@
 #include "NetWatcher.hpp"
 
 #include <cassert>
+#include <utility>
 
 namespace
 {
+    inline HANDLE H(void *p) { return static_cast<HANDLE>(p); }
 
-inline HANDLE H(void *p)
-{
-    return static_cast<HANDLE>(p);
-}
-
-inline void *V(HANDLE h)
-{
-    return static_cast<void *>(h);
-}
-
-VOID CALLBACK IpIfChangeCb(PVOID ctx,
-                           PMIB_IPINTERFACE_ROW /*row*/,
-                           MIB_NOTIFICATION_TYPE /*type*/)
-{
-    auto *w = reinterpret_cast<NetWatcher::Watcher *>(ctx);
-    if (w && w->hKick)
+    VOID CALLBACK IpIfChangeCb(PVOID ctx,
+                               PMIB_IPINTERFACE_ROW /*row*/,
+                               MIB_NOTIFICATION_TYPE /*type*/)
     {
-        ::SetEvent(H(w->hKick));
+        auto *w = reinterpret_cast<NetWatcher *>(ctx);
+        if (w)
+        {
+            w->Kick();
+        }
+    }
+
+    VOID CALLBACK RouteChangeCb(PVOID ctx,
+                                PMIB_IPFORWARD_ROW2 /*row*/,
+                                MIB_NOTIFICATION_TYPE /*type*/)
+    {
+        auto *w = reinterpret_cast<NetWatcher *>(ctx);
+        if (w)
+        {
+            w->Kick();
+        }
+    }
+} // namespace
+
+// ---- NetWatcher ----
+
+NetWatcher::NetWatcher(ReapplyFn reapply,
+                       std::chrono::milliseconds debounce)
+    : debounce_ms_(static_cast<unsigned>(debounce.count()))
+    , reapply_(std::move(reapply))
+{
+    StartCore();
+}
+
+NetWatcher::~NetWatcher()
+{
+    try { StopCore(); } catch (...) {}
+}
+
+NetWatcher::NetWatcher(NetWatcher &&other) noexcept
+{
+    *this = std::move(other);
+}
+
+NetWatcher &NetWatcher::operator=(NetWatcher &&other) noexcept
+{
+    if (this != &other)
+    {
+        try { StopCore(); } catch (...) {}
+
+        h_stop_        = other.h_stop_;        other.h_stop_ = nullptr;
+        h_kick_        = other.h_kick_;        other.h_kick_ = nullptr;
+        h_thread_      = other.h_thread_;      other.h_thread_ = nullptr;
+        h_if_notif_    = other.h_if_notif_;    other.h_if_notif_ = nullptr;
+        h_route_notif_ = other.h_route_notif_; other.h_route_notif_ = nullptr;
+
+        debounce_ms_   = other.debounce_ms_;
+        reapply_       = std::move(other.reapply_);
+        started_       = other.started_;
+        other.started_ = false;
+    }
+    return *this;
+}
+
+bool NetWatcher::IsRunning() const noexcept
+{
+    return started_;
+}
+
+void NetWatcher::Kick() noexcept
+{
+    if (h_kick_)
+    {
+        ::SetEvent(H(h_kick_));
     }
 }
 
-VOID CALLBACK RouteChangeCb(PVOID ctx,
-                            PMIB_IPFORWARD_ROW2 /*row*/,
-                            MIB_NOTIFICATION_TYPE /*type*/)
+void NetWatcher::Stop()
 {
-    auto *w = reinterpret_cast<NetWatcher::Watcher *>(ctx);
-    if (w && w->hKick)
-    {
-        ::SetEvent(H(w->hKick));
-    }
+    StopCore();
 }
 
-DWORD WINAPI WorkerThread(LPVOID param)
+unsigned long __stdcall NetWatcher::ThreadMain(void *param)
 {
-    auto *w = reinterpret_cast<NetWatcher::Watcher *>(param);
-    assert(w && w->hStop && w->hKick);
+    auto *w = reinterpret_cast<NetWatcher *>(param);
+    assert(w);
 
-    HANDLE wait_set[2] = {H(w->hStop), H(w->hKick)};
+    HANDLE wait_set[2] = {H(w->h_stop_), H(w->h_kick_)};
 
     for (;;)
     {
         DWORD dw = ::WaitForMultipleObjects(2, wait_set, FALSE, INFINITE);
         if (dw == WAIT_OBJECT_0)
         {
-            // stop
-            break;
+            break; // stop
         }
         if (dw == WAIT_OBJECT_0 + 1)
         {
-            // коалессация событий: ждём «тишину» debounce_ms
+            // коалессация: ждём «тишину»
             for (;;)
             {
-                DWORD dw2 = ::WaitForMultipleObjects(2, wait_set, FALSE, w->debounce_ms);
+                DWORD dw2 = ::WaitForMultipleObjects(2, wait_set, FALSE, w->debounce_ms_);
                 if (dw2 == WAIT_OBJECT_0)
                 {
-                    // stop во время окна коалессации
-                    return 0;
+                    return 0; // остановка
                 }
                 else if (dw2 == WAIT_TIMEOUT)
                 {
-                    // тишина — выполняем reapply
                     try
                     {
-                        if (w->reapply)
-                        {
-                            w->reapply();
-                        }
+                        if (w->reapply_) { w->reapply_(); }
                     }
-                    catch (...)
-                    {
-                        // гасим исключения, чтобы не убить поток слоем выше
-                    }
+                    catch (...) {}
                     break;
                 }
                 else if (dw2 == WAIT_OBJECT_0 + 1)
                 {
-                    // прилетел ещё один «kick» — ждём дальше до таймаута
-                    continue;
+                    continue; // новый «kick» — ждём ещё
                 }
                 else
                 {
-                    // непредвиденное — попробуем продолжить цикл
                     break;
                 }
             }
@@ -112,106 +156,82 @@ DWORD WINAPI WorkerThread(LPVOID param)
     return 0;
 }
 
-} // namespace
-
-namespace NetWatcher
+void NetWatcher::StartCore()
 {
-
-bool StartNetWatcher(Watcher &w,
-                     ReapplyFn reapply,
-                     std::chrono::milliseconds debounce) noexcept
-{
-    // Уже запущен?
-    if (w.hThread)
+    if (started_)
     {
-        return false;
+        throw std::logic_error("NetWatcher already started");
     }
 
-    w.debounce_ms = static_cast<unsigned>(debounce.count());
-    w.reapply = std::move(reapply);
-
-    // Сигналы
-    HANDLE h_stop = ::CreateEventW(nullptr, TRUE, FALSE, nullptr);  // manual-reset
-    HANDLE h_kick = ::CreateEventW(nullptr, FALSE, FALSE, nullptr); // auto-reset
+    HANDLE h_stop = ::CreateEventW(nullptr, TRUE, FALSE, nullptr);   // manual-reset
+    HANDLE h_kick = ::CreateEventW(nullptr, FALSE, FALSE, nullptr);  // auto-reset
     if (!h_stop || !h_kick)
     {
         if (h_stop) ::CloseHandle(h_stop);
         if (h_kick) ::CloseHandle(h_kick);
-        return false;
+        throw std::runtime_error("CreateEventW failed");
     }
-    w.hStop = V(h_stop);
-    w.hKick = V(h_kick);
+    h_stop_ = h_stop;
+    h_kick_ = h_kick;
 
-    // Подписки на изменения (IPv4+IPv6)
     HANDLE h_if = nullptr;
-    HANDLE h_route = nullptr;
-    if (NotifyIpInterfaceChange(AF_UNSPEC, IpIfChangeCb, &w, FALSE, &h_if) != NO_ERROR)
+    if (NotifyIpInterfaceChange(AF_UNSPEC, IpIfChangeCb, this, FALSE, &h_if) != NO_ERROR)
     {
-        StopNetWatcher(w);
-        return false;
+        ::CloseHandle(H(h_stop_));
+        ::CloseHandle(H(h_kick_));
+        h_stop_ = h_kick_ = nullptr;
+        throw std::runtime_error("NotifyIpInterfaceChange failed");
     }
-    if (NotifyRouteChange2(AF_UNSPEC, RouteChangeCb, &w, FALSE, &h_route) != NO_ERROR)
+    h_if_notif_ = h_if;
+
+    HANDLE h_route = nullptr;
+    if (NotifyRouteChange2(AF_UNSPEC, RouteChangeCb, this, FALSE, &h_route) != NO_ERROR)
     {
         CancelMibChangeNotify2(h_if);
-        StopNetWatcher(w);
-        return false;
+        ::CloseHandle(H(h_stop_));
+        ::CloseHandle(H(h_kick_));
+        h_stop_ = h_kick_ = nullptr;
+        h_if_notif_ = nullptr;
+        throw std::runtime_error("NotifyRouteChange2 failed");
     }
-    w.hIfNotif = V(h_if);
-    w.hRouteNotif = V(h_route);
+    h_route_notif_ = h_route;
 
-    // Поток-воркер
-    HANDLE th = ::CreateThread(nullptr, 0, &WorkerThread, &w, 0, nullptr);
+    HANDLE th = ::CreateThread(nullptr, 0, &NetWatcher::ThreadMain, this, 0, nullptr);
     if (!th)
     {
         CancelMibChangeNotify2(h_if);
         CancelMibChangeNotify2(h_route);
-        StopNetWatcher(w);
-        return false;
+        ::CloseHandle(H(h_stop_));
+        ::CloseHandle(H(h_kick_));
+        h_stop_ = h_kick_ = nullptr;
+        h_if_notif_ = h_route_notif_ = nullptr;
+        throw std::runtime_error("CreateThread failed");
     }
-    w.hThread = V(th);
-    return true;
+    h_thread_ = th;
+
+    started_ = true;
 }
 
-void StopNetWatcher(Watcher &w) noexcept
+void NetWatcher::StopCore()
 {
-    // Отписаться от уведомлений (можно в любом порядке)
-    if (w.hIfNotif)
+    if (!started_)
     {
-        CancelMibChangeNotify2(H(w.hIfNotif));
-        w.hIfNotif = nullptr;
-    }
-    if (w.hRouteNotif)
-    {
-        CancelMibChangeNotify2(H(w.hRouteNotif));
-        w.hRouteNotif = nullptr;
+        return; // идемпотентно
     }
 
-    // Остановить поток
-    if (w.hStop)
+    if (h_if_notif_)   { CancelMibChangeNotify2(H(h_if_notif_));   h_if_notif_ = nullptr; }
+    if (h_route_notif_){ CancelMibChangeNotify2(H(h_route_notif_));h_route_notif_ = nullptr; }
+
+    if (h_stop_) { ::SetEvent(H(h_stop_)); }
+    if (h_thread_)
     {
-        ::SetEvent(H(w.hStop));
-    }
-    if (w.hThread)
-    {
-        ::WaitForSingleObject(H(w.hThread), INFINITE);
-        ::CloseHandle(H(w.hThread));
-        w.hThread = nullptr;
+        ::WaitForSingleObject(H(h_thread_), INFINITE);
+        ::CloseHandle(H(h_thread_));
+        h_thread_ = nullptr;
     }
 
-    // Закрыть события
-    if (w.hStop)
-    {
-        ::CloseHandle(H(w.hStop));
-        w.hStop = nullptr;
-    }
-    if (w.hKick)
-    {
-        ::CloseHandle(H(w.hKick));
-        w.hKick = nullptr;
-    }
+    if (h_stop_) { ::CloseHandle(H(h_stop_)); h_stop_ = nullptr; }
+    if (h_kick_) { ::CloseHandle(H(h_kick_)); h_kick_ = nullptr; }
 
-    // Сброс колбэка (на случай повторного запуска)
-    w.reapply = {};
+    started_ = false;
 }
-
-} // namespace NetWatcher

@@ -25,7 +25,6 @@ using ssize_t = SSIZE_T;
 #include <iostream>
 #include <string>
 
-NetWatcher::Watcher watcher;
 NET_LUID luid{};
 NetworkRollback::Baseline base{};
 
@@ -33,8 +32,6 @@ static volatile sig_atomic_t working = true;
 
 static void on_exit(int)
 {
-    NetWatcher::StopNetWatcher(watcher);
-
     //NetworkRollback::RollbackAll(base, reinterpret_cast<const char *>(cfg.server_ip.c_str()));
 
     working = false;
@@ -241,12 +238,7 @@ int main(int argc,
     };
 
     reapply();
-
-    if (!NetWatcher::StartNetWatcher(watcher, reapply, std::chrono::milliseconds(1500)))
-    {
-        std::cerr << "Error in StartNetWatcher\n";
-        return 1;
-    }
+    NetWatcher nw(reapply, std::chrono::milliseconds(1500));
 
     if (Network::ConfigureNetwork_Base(adapter) != 0)
     {
