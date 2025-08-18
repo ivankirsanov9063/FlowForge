@@ -1,25 +1,38 @@
 #pragma once
-// DnsConfig.hpp — Windows DNS setup via netsh (IPv4 + IPv6)
+// DnsConfig.hpp — Windows DNS setup (IPv4 + IPv6)
 // Требуются: <windows.h>, <iphlpapi.h>, линковка iphlpapi.lib
 
 #include <string>
 #include <vector>
+
 #include <windows.h>
 #include <iphlpapi.h>
 
-namespace dns {
+namespace dns
+{
 
-    // Установить DNS-серверы для интерфейса по NET_LUID.
-    // servers: список IPv4/IPv6 адресов в текстовом виде (первый — primary).
-    // suffix: пока игнорируется (см. комментарий в .cpp).
+    /**
+     * @brief Устанавливает список DNS-серверов для интерфейса по NET_LUID.
+     * @param luid     Идентификатор сетевого интерфейса (NET_LUID).
+     * @param servers  Список адресов DNS в текстовом виде (IPv4/IPv6). Первый — primary.
+     * @param suffix   Зарезервировано; в текущей реализации игнорируется.
+     * @return true, если операция выполнена успешно; иначе false.
+     */
     bool Dns_Set(NET_LUID luid,
-                 const std::vector<std::wstring>& servers,
-                 const std::wstring& suffix = L"") noexcept;
+                 const std::vector<std::wstring> &servers,
+                 const std::wstring &suffix = L"") noexcept;
 
-    // Сбросить DNS (удалить все статические DNS, вернуть авто-настройку/DHCP где возможно).
+    /**
+     * @brief Сбрасывает DNS-настройки интерфейса.
+     * @param luid  Идентификатор сетевого интерфейса (NET_LUID).
+     * @return true при успешном возврате к авто-настройке/DHCP (где возможно); иначе false.
+     */
     bool Dns_Unset(NET_LUID luid) noexcept;
 
-    // Последняя текстовая ошибка (exit code netsh / Win32 last-error).
+    /**
+     * @brief Возвращает текст последней ошибки.
+     * @return Строка с описанием ошибки или пустая строка, если ошибок не было.
+     */
     std::wstring Dns_LastError();
 
 } // namespace dns

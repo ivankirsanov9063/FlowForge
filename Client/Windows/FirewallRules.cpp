@@ -15,94 +15,172 @@
 #include <netfw.h>
 #include <atlbase.h>
 #include <atlcomcli.h>
-#include <string>
+
 #include <cstdint>
+#include <string>
 #include <vector>
 
 #pragma comment(lib, "ole32.lib")
 #pragma comment(lib, "oleaut32.lib")
 
-namespace { // ===== internal helpers =====
+namespace
+{
 
-struct ComInit {
+struct ComInit
+{
     HRESULT hr = S_OK;
-    ComInit() { hr = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED); }
-    ~ComInit(){ if (SUCCEEDED(hr)) CoUninitialize(); }
-    bool ok() const { return SUCCEEDED(hr); }
+
+    ComInit()
+    {
+        hr = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
+    }
+
+    ~ComInit()
+    {
+        if (SUCCEEDED(hr))
+        {
+            CoUninitialize();
+        }
+    }
+
+    bool ok() const
+    {
+        return SUCCEEDED(hr);
+    }
 };
 
-std::wstring g_lastError;
+std::wstring g_last_error;
 
-static void SetLastErrorHr(HRESULT hr, const wchar_t* where) {
-    wchar_t* msgBuf = nullptr;
-    DWORD flags = FORMAT_MESSAGE_ALLOCATE_BUFFER | FORMAT_MESSAGE_FROM_SYSTEM | FORMAT_MESSAGE_IGNORE_INSERTS;
-    DWORD len = FormatMessageW(flags, nullptr, hr, MAKELANGID(LANG_NEUTRAL, SUBLANG_DEFAULT),
-                               (LPWSTR)&msgBuf, 0, nullptr);
-    std::wstring msg = (len && msgBuf) ? std::wstring(msgBuf, msgBuf + len) : L"";
-    if (msgBuf) LocalFree(msgBuf);
+static void set_last_error_hr(HRESULT hr,
+                              const wchar_t *where)
+{
+    wchar_t *msg_buf = nullptr;
+    DWORD flags = FORMAT_MESSAGE_ALLOCATE_BUFFER |
+                  FORMAT_MESSAGE_FROM_SYSTEM |
+                  FORMAT_MESSAGE_IGNORE_INSERTS;
+
+    DWORD len = FormatMessageW(flags,
+                               nullptr,
+                               hr,
+                               MAKELANGID(LANG_NEUTRAL, SUBLANG_DEFAULT),
+                               (LPWSTR)&msg_buf,
+                               0,
+                               nullptr);
+
+    std::wstring msg = (len && msg_buf) ? std::wstring(msg_buf, msg_buf + len) : L"";
+    if (msg_buf)
+    {
+        LocalFree(msg_buf);
+    }
 
     wchar_t hex[11]{};
-    swprintf(hex, 11, L"%08X", (unsigned)hr);
-    g_lastError = L"[" + std::wstring(where) + L"] HRESULT=0x" + hex + (msg.empty()? L"" : (L" : " + msg));
+    swprintf(hex, 11, L"%08X", static_cast<unsigned>(hr));
+    g_last_error = L"["
+                 + std::wstring(where)
+                 + L"] HRESULT=0x"
+                 + hex
+                 + (msg.empty() ? L"" : (L" : " + msg));
 }
 
-static bool GetPolicy(INetFwPolicy2** outPolicy) {
-    *outPolicy = nullptr;
+static bool get_policy(INetFwPolicy2 **out_policy)
+{
+    *out_policy = nullptr;
+
     CComPtr<INetFwPolicy2> policy;
-    HRESULT hr = CoCreateInstance(__uuidof(NetFwPolicy2), nullptr, CLSCTX_INPROC_SERVER,
-                                  __uuidof(INetFwPolicy2), (void**)&policy);
-    if (FAILED(hr)) { SetLastErrorHr(hr, L"CoCreateInstance(NetFwPolicy2)"); return false; }
-    *outPolicy = policy.Detach();
+    HRESULT hr = CoCreateInstance(__uuidof(NetFwPolicy2),
+                                  nullptr,
+                                  CLSCTX_INPROC_SERVER,
+                                  __uuidof(INetFwPolicy2),
+                                  (void **)&policy);
+    if (FAILED(hr))
+    {
+        set_last_error_hr(hr, L"CoCreateInstance(NetFwPolicy2)");
+        return false;
+    }
+
+    *out_policy = policy.Detach();
     return true;
 }
 
-static bool GetRules(INetFwRules** outRules) {
-    *outRules = nullptr;
+static bool get_rules(INetFwRules **out_rules)
+{
+    *out_rules = nullptr;
+
     CComPtr<INetFwPolicy2> policy;
-    if (!GetPolicy(&policy)) return false;
-    HRESULT hr = policy->get_Rules(outRules);
-    if (FAILED(hr)) { SetLastErrorHr(hr, L"INetFwPolicy2::get_Rules"); return false; }
+    if (!get_policy(&policy))
+    {
+        return false;
+    }
+
+    HRESULT hr = policy->get_Rules(out_rules);
+    if (FAILED(hr))
+    {
+        set_last_error_hr(hr, L"INetFwPolicy2::get_Rules");
+        return false;
+    }
     return true;
 }
 
-static std::wstring MakeClientRuleName(const fw::ClientRule& c, bool isTcp) {
-    return c.rule_prefix + (isTcp ? L" Out TCP to " : L" Out UDP to ")
+static std::wstring make_client_rule_name(const fw::ClientRule &c,
+                                          bool is_tcp)
+{
+    return c.rule_prefix + (is_tcp ? L" Out TCP to " : L" Out UDP to ")
          + c.server_ip + L":" + std::to_wstring(c.udp_port);
 }
 
-static bool UpsertRule(INetFwRule* rule) {
+static bool upsert_rule(INetFwRule *rule)
+{
     CComPtr<INetFwRules> rules;
-    if (!GetRules(&rules)) return false;
+    if (!get_rules(&rules))
+    {
+        return false;
+    }
 
     CComBSTR name;
     HRESULT hr = rule->get_Name(&name);
-    if (FAILED(hr) || !name || SysStringLen(name) == 0) {
-        SetLastErrorHr(FAILED(hr) ? hr : E_INVALIDARG, L"INetFwRule::get_Name");
+    if (FAILED(hr) || !name || SysStringLen(name) == 0)
+    {
+        set_last_error_hr(FAILED(hr) ? hr : E_INVALIDARG, L"INetFwRule::get_Name");
         return false;
     }
 
     // remove-then-add (идемпотентно)
     CComPtr<INetFwRule> existing;
-    if (SUCCEEDED(rules->Item(name, &existing)) && existing) {
+    if (SUCCEEDED(rules->Item(name, &existing)) && existing)
+    {
         rules->Remove(name);
     }
 
     hr = rules->Add(rule);
-    if (FAILED(hr)) { SetLastErrorHr(hr, L"INetFwRules::Add"); return false; }
+    if (FAILED(hr))
+    {
+        set_last_error_hr(hr, L"INetFwRules::Add");
+        return false;
+    }
     return true;
 }
 
-static bool CreateOutboundRule(const fw::ClientRule& c,
-                               long ipProto,         // NET_FW_IP_PROTOCOL_TCP/UDP
-                               const wchar_t* nameSuffix, // L"UDP"/L"TCP"
-                               const wchar_t* desc) {
-    CComPtr<INetFwRule> r;
-    HRESULT hr = CoCreateInstance(__uuidof(NetFwRule), nullptr, CLSCTX_INPROC_SERVER,
-                                  __uuidof(INetFwRule), (void**)&r);
-    if (FAILED(hr)) { SetLastErrorHr(hr, L"CoCreateInstance(NetFwRule)"); return false; }
+static bool create_outbound_rule(const fw::ClientRule &c,
+                                 long ip_proto,                // NET_FW_IP_PROTOCOL_TCP/UDP
+                                 const wchar_t *name_suffix,   // L"UDP"/L"TCP"
+                                 const wchar_t *desc)
+{
+    (void)name_suffix;
 
-    const bool isTcp = (ipProto == NET_FW_IP_PROTOCOL_TCP);
-    const std::wstring nm = MakeClientRuleName(c, isTcp);
+    CComPtr<INetFwRule> r;
+    HRESULT hr = CoCreateInstance(__uuidof(NetFwRule),
+                                  nullptr,
+                                  CLSCTX_INPROC_SERVER,
+                                  __uuidof(INetFwRule),
+                                  (void **)&r);
+    if (FAILED(hr))
+    {
+        set_last_error_hr(hr, L"CoCreateInstance(NetFwRule)");
+        return false;
+    }
+
+    const bool is_tcp = (ip_proto == NET_FW_IP_PROTOCOL_TCP);
+    const std::wstring nm = make_client_rule_name(c, is_tcp);
 
     r->put_Name(CComBSTR(nm.c_str()));
     r->put_Description(CComBSTR(desc));
@@ -112,47 +190,58 @@ static bool CreateOutboundRule(const fw::ClientRule& c,
     r->put_Profiles(NET_FW_PROFILE2_ALL);
     r->put_InterfaceTypes(CComBSTR(L"All"));
 
-    r->put_Protocol(ipProto);
+    r->put_Protocol(ip_proto);
     r->put_RemoteAddresses(CComBSTR(c.server_ip.c_str()));
     r->put_RemotePorts(CComBSTR(std::to_wstring(c.udp_port).c_str())); // используем тот же порт и для TCP
     r->put_ApplicationName(CComBSTR(c.app_path.c_str()));
 
-    return UpsertRule(r);
+    return upsert_rule(r);
 }
 
 } // anonymous namespace
 
-namespace fw { // ===== public API =====
+namespace fw
+{
 
-bool EnsureClientOutboundUdp(const ClientRule& c) {
-    g_lastError.clear();
+bool EnsureClientOutboundUdp(const ClientRule &c)
+{
+    g_last_error.clear();
+
     ComInit ci;
-    if (!ci.ok()) { SetLastErrorHr(ci.hr, L"CoInitializeEx"); return false; }
+    if (!ci.ok())
+    {
+        set_last_error_hr(ci.hr, L"CoInitializeEx");
+        return false;
+    }
 
     // Валидация
-    if (c.rule_prefix.empty() || c.app_path.empty() || c.server_ip.empty() || c.udp_port == 0) {
-        g_lastError = L"Invalid ClientRule arguments";
+    if (c.rule_prefix.empty() || c.app_path.empty() || c.server_ip.empty() || c.udp_port == 0)
+    {
+        g_last_error = L"Invalid ClientRule arguments";
         return false;
     }
 
     // 1) UDP правило
-    if (!CreateOutboundRule(c,
-            NET_FW_IP_PROTOCOL_UDP,
-            L"UDP",
-            L"VPN client outbound UDP allow")) {
+    if (!create_outbound_rule(c,
+                              NET_FW_IP_PROTOCOL_UDP,
+                              L"UDP",
+                              L"VPN client outbound UDP allow"))
+    {
         return false;
     }
 
     // 2) TCP правило — тот же dst ip/port
-    if (!CreateOutboundRule(c,
-            NET_FW_IP_PROTOCOL_TCP,
-            L"TCP",
-            L"VPN client outbound TCP allow")) {
+    if (!create_outbound_rule(c,
+                              NET_FW_IP_PROTOCOL_TCP,
+                              L"TCP",
+                              L"VPN client outbound TCP allow"))
+    {
         // попытка отката UDP-правила (чтобы не оставлять половинку)
         CComPtr<INetFwRules> rules;
-        if (GetRules(&rules)) {
-            const std::wstring nameUdp = MakeClientRuleName(c, /*isTcp=*/false);
-            rules->Remove(CComBSTR(nameUdp.c_str()));
+        if (get_rules(&rules))
+        {
+            const std::wstring name_udp = make_client_rule_name(c, /*is_tcp=*/false);
+            rules->Remove(CComBSTR(name_udp.c_str()));
         }
         return false;
     }
@@ -160,35 +249,58 @@ bool EnsureClientOutboundUdp(const ClientRule& c) {
     return true;
 }
 
-bool RemoveByPrefix(const std::wstring& prefix) {
-    g_lastError.clear();
+bool RemoveByPrefix(const std::wstring &prefix)
+{
+    g_last_error.clear();
+
     ComInit ci;
-    if (!ci.ok()) { SetLastErrorHr(ci.hr, L"CoInitializeEx"); return false; }
+    if (!ci.ok())
+    {
+        set_last_error_hr(ci.hr, L"CoInitializeEx");
+        return false;
+    }
 
     CComPtr<INetFwRules> rules;
-    if (!GetRules(&rules)) return false;
+    if (!get_rules(&rules))
+    {
+        return false;
+    }
 
     // Собираем имена для удаления (нельзя удалять во время перечисления)
-    std::vector<CComBSTR> toRemove;
+    std::vector<CComBSTR> to_remove;
 
     CComPtr<IUnknown> unk;
     HRESULT hr = rules->get__NewEnum(&unk);
-    if (FAILED(hr) || !unk) { SetLastErrorHr(hr, L"INetFwRules::get__NewEnum"); return false; }
+    if (FAILED(hr) || !unk)
+    {
+        set_last_error_hr(hr, L"INetFwRules::get__NewEnum");
+        return false;
+    }
 
     CComPtr<IEnumVARIANT> en;
-    hr = unk->QueryInterface(__uuidof(IEnumVARIANT), (void**)&en);
-    if (FAILED(hr) || !en) { SetLastErrorHr(hr, L"QueryInterface(IEnumVARIANT)"); return false; }
+    hr = unk->QueryInterface(__uuidof(IEnumVARIANT), (void **)&en);
+    if (FAILED(hr) || !en)
+    {
+        set_last_error_hr(hr, L"QueryInterface(IEnumVARIANT)");
+        return false;
+    }
 
-    VARIANT v; VariantInit(&v);
-    while (en->Next(1, &v, nullptr) == S_OK) {
-        if (v.vt == VT_DISPATCH && v.pdispVal) {
+    VARIANT v;
+    VariantInit(&v);
+    while (en->Next(1, &v, nullptr) == S_OK)
+    {
+        if (v.vt == VT_DISPATCH && v.pdispVal)
+        {
             CComPtr<INetFwRule> rule;
-            if (SUCCEEDED(v.pdispVal->QueryInterface(__uuidof(INetFwRule), (void**)&rule)) && rule) {
+            if (SUCCEEDED(v.pdispVal->QueryInterface(__uuidof(INetFwRule), (void **)&rule)) && rule)
+            {
                 CComBSTR name;
-                if (SUCCEEDED(rule->get_Name(&name)) && name) {
-                    std::wstring n(static_cast<const wchar_t*>(name), SysStringLen(name));
-                    if (!prefix.empty() && n.rfind(prefix, 0) == 0) {
-                        toRemove.emplace_back(name);
+                if (SUCCEEDED(rule->get_Name(&name)) && name)
+                {
+                    std::wstring n(static_cast<const wchar_t *>(name), SysStringLen(name));
+                    if (!prefix.empty() && n.rfind(prefix, 0) == 0)
+                    {
+                        to_remove.emplace_back(name);
                     }
                 }
             }
@@ -196,12 +308,16 @@ bool RemoveByPrefix(const std::wstring& prefix) {
         VariantClear(&v);
     }
 
-    for (auto& n : toRemove) {
+    for (auto &n : to_remove)
+    {
         rules->Remove(n);
     }
     return true;
 }
 
-std::wstring LastError() { return g_lastError; }
+std::wstring LastError()
+{
+    return g_last_error;
+}
 
 } // namespace fw

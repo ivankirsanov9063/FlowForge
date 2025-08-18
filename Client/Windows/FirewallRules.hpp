@@ -9,34 +9,40 @@
 #include <string>
 #include <cstdint>
 
-namespace fw {
+namespace fw
+{
 
     // Параметры правила для клиента:
     //  - rule_prefix: префикс имени правила (для группировки/удаления),
     //  - app_path: полный путь к вашему клиентскому .exe,
     //  - server_ip: удалённый адрес сервера (IPv4/IPv6 в строке),
     //  - udp_port: удалённый UDP-порт.
-    struct ClientRule {
-        std::wstring   rule_prefix;
-        std::wstring   app_path;
-        std::wstring   server_ip;
-        std::uint16_t  udp_port;
+    struct ClientRule
+    {
+        std::wstring  rule_prefix;
+        std::wstring  app_path;
+        std::wstring  server_ip;
+        std::uint16_t udp_port;
     };
 
-    // Идемпотентно создаёт/обновляет outbound-правило брандмауэра:
-    // Direction=OUT, Action=ALLOW, Protocol=UDP,
-    // RemoteAddresses=server_ip, RemotePorts=udp_port, ApplicationName=app_path,
-    // Profiles=ALL, InterfaceTypes="All", Enabled=TRUE.
-    // Имя правила: "<rule_prefix> Out UDP to <ip>:<port>".
-    // Возвращает true при успехе; при ошибке см. LastError().
-    bool EnsureClientOutboundUdp(const ClientRule& cfg);
+    /**
+     * @brief Идемпотентно создаёт/обновляет outbound-правило UDP для клиента.
+     * @param cfg Параметры правила.
+     * @return true при успехе, иначе false.
+     */
+    bool EnsureClientOutboundUdp(const ClientRule &cfg);
 
-    // Удаляет все правила, у которых Name начинается с rule_prefix.
-    // Возвращает true при успехе; при ошибке см. LastError().
-    bool RemoveByPrefix(const std::wstring& rule_prefix);
+    /**
+     * @brief Удаляет все правила, чьё имя начинается с указанного префикса.
+     * @param rule_prefix Префикс имени правила.
+     * @return true при успехе, иначе false.
+     */
+    bool RemoveByPrefix(const std::wstring &rule_prefix);
 
-    // Возвращает описание последней ошибки (HRESULT + текст из FormatMessageW).
-    // Не потокобезопасно (глобальное состояние внутри реализации).
+    /**
+     * @brief Возвращает описание последней ошибки.
+     * @return Строка с сообщением об ошибке.
+     */
     std::wstring LastError();
 
 } // namespace fw

@@ -1,161 +1,287 @@
-// DnsConfig.cpp
+// DNS.cpp — шапка ДОЛЖНА выглядеть примерно так:
+
 #ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
 #endif
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#ifndef _WIN32_WINNT
+#define _WIN32_WINNT 0x0601 // Win7+
+#endif
+#define _WINSOCKAPI_ // страховка: запретит попадание winsock.h через windows.h
+
+#include <winsock2.h>
+#include <ws2tcpip.h>
 #include <windows.h>
 #include <iphlpapi.h>
 #include <netioapi.h>
-#include <ws2tcpip.h>   // InetPtonW
+#include <objbase.h>
 #include <string>
 #include <vector>
 
+#include "DNS.hpp" // ← ТОЛЬКО здесь, после winsock2/ws2tcpip/windows
+
+#pragma comment(lib, "Ws2_32.lib")
 #pragma comment(lib, "iphlpapi.lib")
+#pragma comment(lib, "Ole32.lib")
 
-#include "DNS.hpp"
+namespace
+{
 
-namespace {
+std::wstring g_last_err;
 
-std::wstring g_lastErr;
+void set_err(const std::wstring &msg)
+{
+    g_last_err = msg;
+}
 
-void SetErr(const std::wstring& s) { g_lastErr = s; }
+void set_err_win(const std::wstring &msg,
+                 DWORD code)
+{
+    g_last_err = msg + L", Win32=" + std::to_wstring(code);
+}
 
-bool IsIPv4(const std::wstring& s) {
+bool is_ipv4(const std::wstring &s)
+{
     IN_ADDR a{};
     return InetPtonW(AF_INET, s.c_str(), &a) == 1;
 }
-bool IsIPv6(const std::wstring& s) {
-    IN6_ADDR a6{};
-    return InetPtonW(AF_INET6, s.c_str(), &a6) == 1;
+
+bool is_ipv6(const std::wstring &s)
+{
+    IN6_ADDR a{};
+    return InetPtonW(AF_INET6, s.c_str(), &a) == 1;
 }
 
-bool LuidToName(const NET_LUID& luid, std::wstring& outName) {
-    wchar_t buf[IF_MAX_STRING_SIZE + 1]{};
-    if (ConvertInterfaceLuidToNameW(&luid, buf, IF_MAX_STRING_SIZE) != NO_ERROR) {
-        SetErr(L"ConvertInterfaceLuidToNameW failed");
+bool luid_to_guid_string(const NET_LUID &luid,
+                         std::wstring &guid_str)
+{
+    GUID guid{};
+    if (ConvertInterfaceLuidToGuid(&luid, &guid) != NO_ERROR)
+    {
+        set_err(L"ConvertInterfaceLuidToGuid failed");
         return false;
     }
-    outName.assign(buf);
-    return !outName.empty();
+
+    wchar_t buf[64]{};
+    const int n = StringFromGUID2(guid, buf, static_cast<int>(std::size(buf)));
+    if (n <= 0)
+    {
+        set_err(L"StringFromGUID2 failed");
+        return false;
+    }
+
+    guid_str.assign(buf);
+    return !guid_str.empty();
 }
 
-bool RunNetsh(const std::wstring& args, DWORD* exitCode = nullptr) {
-    // Собираем командную строку: "netsh.exe " + args
-    std::wstring cmd = L"\"netsh.exe\" " + args;
-
-    STARTUPINFOW si{};
-    si.cb = sizeof(si);
-    PROCESS_INFORMATION pi{};
-    // Без окна
-    if (!CreateProcessW(nullptr, cmd.data(), nullptr, nullptr, FALSE,
-                        CREATE_NO_WINDOW, nullptr, nullptr, &si, &pi)) {
-        DWORD le = GetLastError();
-        SetErr(L"CreateProcessW(netsh) failed, Win32=" + std::to_wstring(le));
-        return false;
+std::wstring join_comma(const std::vector<std::wstring> &addrs)
+{
+    std::wstring out;
+    out.reserve(64 * addrs.size());
+    for (std::size_t i = 0; i < addrs.size(); ++i)
+    {
+        if (i)
+        {
+            out.push_back(L',');
+        }
+        out.append(addrs[i]);
     }
-    CloseHandle(pi.hThread);
+    return out;
+}
 
-    WaitForSingleObject(pi.hProcess, INFINITE);
-    DWORD code = 0;
-    GetExitCodeProcess(pi.hProcess, &code);
-    CloseHandle(pi.hProcess);
+bool open_interface_key(const std::wstring &base_path,
+                        const std::wstring &guid_str,
+                        REGSAM access,
+                        HKEY &hkey_out)
+{
+    hkey_out = nullptr;
 
-    if (exitCode) *exitCode = code;
-    if (code != 0) {
-        SetErr(L"netsh exit code = " + std::to_wstring(code) + L" for: " + args);
+    std::wstring path = base_path;
+    path += guid_str;
+
+    // Открываем существующий ключ (создавать ключ интерфейса нельзя).
+    const LSTATUS st = RegOpenKeyExW(HKEY_LOCAL_MACHINE,
+                                     path.c_str(),
+                                     0,
+                                     access | KEY_WOW64_64KEY,
+                                     &hkey_out);
+    if (st != ERROR_SUCCESS)
+    {
+        set_err_win(L"RegOpenKeyExW failed for " + path, static_cast<DWORD>(st));
         return false;
     }
     return true;
 }
 
-bool SetIPv4(const std::wstring& ifName, const std::vector<std::wstring>& v4) {
-    if (v4.empty()) return true;
+bool write_name_server(HKEY hkey,
+                       const std::wstring &value) // пустая строка => удалить
+{
+    if (value.empty())
+    {
+        const LSTATUS del = RegDeleteValueW(hkey, L"NameServer");
+        if (del == ERROR_SUCCESS || del == ERROR_FILE_NOT_FOUND)
+        {
+            return true;
+        }
+        set_err_win(L"RegDeleteValueW(NameServer) failed", static_cast<DWORD>(del));
+        return false;
+    }
 
-    // Primary
-    std::wstring args = L"interface ipv4 set dnsservers name=\"" + ifName +
-                        L"\" static " + v4[0] + L" primary validate=no";
-    if (!RunNetsh(args)) return false;
-
-    // Secondary/other
-    for (size_t i = 1; i < v4.size(); ++i) {
-        std::wstring add = L"interface ipv4 add dnsservers name=\"" + ifName +
-                           L"\" " + v4[i] + L" index=" + std::to_wstring(i + 1) + L" validate=no";
-        if (!RunNetsh(add)) return false;
+    // REG_SZ, UTF-16, включая завершающий нуль
+    const DWORD bytes = static_cast<DWORD>((value.size() + 1) * sizeof(wchar_t));
+    const LSTATUS st = RegSetValueExW(hkey,
+                                      L"NameServer",
+                                      0,
+                                      REG_SZ,
+                                      reinterpret_cast<const BYTE *>(value.c_str()),
+                                      bytes);
+    if (st != ERROR_SUCCESS)
+    {
+        set_err_win(L"RegSetValueExW(NameServer) failed", static_cast<DWORD>(st));
+        return false;
     }
     return true;
 }
 
-bool SetIPv6(const std::wstring& ifName, const std::vector<std::wstring>& v6) {
-    if (v6.empty()) return true;
-
-    // На всякий случай очистим все существующие (не везде нужен DHCP для v6)
-    (void)RunNetsh(L"interface ipv6 delete dnsservers name=\"" + ifName + L"\" all");
-
-    for (size_t i = 0; i < v6.size(); ++i) {
-        std::wstring add = L"interface ipv6 add dnsservers name=\"" + ifName +
-                           L"\" address=" + v6[i] + L" index=" + std::to_wstring(i + 1);
-        if (!RunNetsh(add)) return false;
+void flush_resolver_cache()
+{
+    using PFN_Flush = BOOL(WINAPI *)(VOID);
+    HMODULE dnsapi = LoadLibraryW(L"dnsapi.dll");
+    if (!dnsapi)
+    {
+        return;
     }
-    return true;
+    auto p_flush = reinterpret_cast<PFN_Flush>(GetProcAddress(dnsapi, "DnsFlushResolverCache"));
+    if (p_flush)
+    {
+        (void)p_flush();
+    }
+    FreeLibrary(dnsapi);
 }
 
-bool UnsetIPv4(const std::wstring& ifName) {
-    // Возврат к DHCP (если интерфейс его поддерживает)
-    if (RunNetsh(L"interface ipv4 set dnsservers name=\"" + ifName + L"\" dhcp"))
+bool set_dns_for_family(const std::wstring &guid_str,
+                        int af,
+                        const std::vector<std::wstring> &servers)
+{
+    if (servers.empty())
+    {
         return true;
+    }
 
-    // Если dhcp не сработал — просто удалим все записи
-    return RunNetsh(L"interface ipv4 delete dnsservers name=\"" + ifName + L"\" all");
+    const std::wstring value = join_comma(servers);
+    const std::wstring base = (af == AF_INET)
+                                  ? L"SYSTEM\\CurrentControlSet\\Services\\Tcpip\\Parameters\\Interfaces\\"
+                                  : L"SYSTEM\\CurrentControlSet\\Services\\Tcpip6\\Parameters\\Interfaces\\";
+
+    HKEY hkey = nullptr;
+    if (!open_interface_key(base, guid_str, KEY_SET_VALUE, hkey))
+    {
+        return false;
+    }
+
+    const bool ok = write_name_server(hkey, value);
+    RegCloseKey(hkey);
+    return ok;
 }
 
-bool UnsetIPv6(const std::wstring& ifName) {
-    // Для IPv6 чаще достаточно удалить все записи:
-    return RunNetsh(L"interface ipv6 delete dnsservers name=\"" + ifName + L"\" all");
+bool unset_dns_for_family(const std::wstring &guid_str,
+                          int af)
+{
+    const std::wstring base = (af == AF_INET)
+                                  ? L"SYSTEM\\CurrentControlSet\\Services\\Tcpip\\Parameters\\Interfaces\\"
+                                  : L"SYSTEM\\CurrentControlSet\\Services\\Tcpip6\\Parameters\\Interfaces\\";
+
+    HKEY hkey = nullptr;
+    if (!open_interface_key(base, guid_str, KEY_SET_VALUE, hkey))
+    {
+        return false;
+    }
+
+    const bool ok = write_name_server(hkey, L""); // удаляем NameServer => возврат к DHCP/автонастройке
+    RegCloseKey(hkey);
+    return ok;
 }
 
 } // namespace
 
-namespace dns {
+namespace dns
+{
 
 bool Dns_Set(NET_LUID luid,
-             const std::vector<std::wstring>& servers,
-             const std::wstring& /*suffix*/) noexcept
+             const std::vector<std::wstring> &servers,
+             const std::wstring &/*suffix*/) noexcept
 {
-    g_lastErr.clear();
-    if (servers.empty()) { SetErr(L"servers is empty"); return false; }
+    g_last_err.clear();
 
-    std::wstring ifName;
-    if (!LuidToName(luid, ifName)) return false;
+    if (servers.empty())
+    {
+        set_err(L"servers is empty");
+        return false;
+    }
 
-    std::vector<std::wstring> v4, v6;
+    std::vector<std::wstring> v4;
+    std::vector<std::wstring> v6;
     v4.reserve(servers.size());
     v6.reserve(servers.size());
-    for (const auto& s : servers) {
-        if (IsIPv4(s)) v4.push_back(s);
-        else if (IsIPv6(s)) v6.push_back(s);
-        else {
-            SetErr(L"Invalid IP address: " + s);
+
+    for (const auto &s : servers)
+    {
+        if (is_ipv4(s))
+        {
+            v4.push_back(s);
+        }
+        else if (is_ipv6(s))
+        {
+            v6.push_back(s);
+        }
+        else
+        {
+            set_err(L"Invalid IP address: " + s);
             return false;
         }
     }
 
-    if (!SetIPv4(ifName, v4)) return false;
-    if (!SetIPv6(ifName, v6)) return false;
+    std::wstring guid_str;
+    if (!luid_to_guid_string(luid, guid_str))
+    {
+        return false;
+    }
 
-    // NOTE: per-interface DNS suffix не настраиваем здесь (см. комментарий выше).
+    if (!set_dns_for_family(guid_str, AF_INET, v4))
+    {
+        return false;
+    }
+    if (!set_dns_for_family(guid_str, AF_INET6, v6))
+    {
+        return false;
+    }
+
+    flush_resolver_cache();
     return true;
 }
 
-bool Dns_Unset(NET_LUID luid) noexcept {
-    g_lastErr.clear();
+bool Dns_Unset(NET_LUID luid) noexcept
+{
+    g_last_err.clear();
 
-    std::wstring ifName;
-    if (!LuidToName(luid, ifName)) return false;
+    std::wstring guid_str;
+    if (!luid_to_guid_string(luid, guid_str))
+    {
+        return false;
+    }
 
-    bool ok4 = UnsetIPv4(ifName);
-    bool ok6 = UnsetIPv6(ifName);
+    const bool ok4 = unset_dns_for_family(guid_str, AF_INET);
+    const bool ok6 = unset_dns_for_family(guid_str, AF_INET6);
+
+    flush_resolver_cache();
     return ok4 && ok6;
 }
 
-std::wstring Dns_LastError() { return g_lastErr; }
+std::wstring Dns_LastError()
+{
+    return g_last_err;
+}
 
 } // namespace dns
