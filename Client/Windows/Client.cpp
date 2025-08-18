@@ -25,13 +25,6 @@ using ssize_t = SSIZE_T;
 #include <iostream>
 #include <string>
 
-static FirewallRules::ClientRule cfg{
-    .rule_prefix = L"FlowForge",
-    .app_path    = L"C:\\Users\\choix\\CLionProjects\\FlowForge\\build\\bin\\Client.exe",
-    .server_ip   = L"193.233.23.221",
-    .udp_port    = 5555
-};
-
 NetWatcher::Watcher watcher;
 NET_LUID luid{};
 NetworkRollback::Baseline base{};
@@ -42,17 +35,7 @@ static void on_exit(int)
 {
     NetWatcher::StopNetWatcher(watcher);
 
-    NetworkRollback::RollbackAll(base, reinterpret_cast<const char *>(cfg.server_ip.c_str()));
-
-    if (!FirewallRules::RemoveByPrefix(cfg.rule_prefix))
-    {
-        std::wcerr << L"[ERR] RemoveByPrefix failed: " << FirewallRules::LastError() << L"\n";
-    }
-
-    if (!DNS::Dns_Unset(luid))
-    {
-        std::wcerr << L"[ERR] Dns_Unset failed\n";
-    }
+    //NetworkRollback::RollbackAll(base, reinterpret_cast<const char *>(cfg.server_ip.c_str()));
 
     working = false;
 }
@@ -198,11 +181,13 @@ int main(int argc,
         return 1;
     }
 
-    if (!FirewallRules::EnsureClientOutboundUdp(cfg))
-    {
-        std::cerr << "error EnsureClientOutboundUdp\n";
-        return 1; // залогируйте FirewallRules::LastError()
-    }
+    static FirewallRules::ClientRule cfg{
+        .rule_prefix = L"FlowForge",
+        .app_path    = L"C:\\Users\\choix\\CLionProjects\\FlowForge\\build\\bin\\Client.exe",
+        .server_ip   = L"193.233.23.221"
+    };
+    FirewallRules fw(cfg); // RAII
+    fw.Allow(FirewallRules::Protocol::UDP, 5555);
 
     auto plugin = PluginWrapper::Load(plugin_path);
     if (!plugin.handle)
@@ -228,11 +213,8 @@ int main(int argc,
     Wintun.GetLuid(adapter, &luid);
     NetworkRollback::CaptureBaseline(luid, base);
 
-    std::vector<std::wstring> dns_servers = {L"10.8.0.1", L"1.1.1.1"}; // IPv4/IPv6 можно смешивать
-    if (!DNS::Dns_Set(luid, dns_servers /*, L"corp.local"*/))
-    {
-        std::wcerr << L"[DNS] set failed: " << DNS::Dns_LastError() << L"\n";
-    }
+    DNS dns(luid);
+    dns.Apply({L"10.8.0.1", L"1.1.1.1"});
 
     auto reapply = [&]()
     {

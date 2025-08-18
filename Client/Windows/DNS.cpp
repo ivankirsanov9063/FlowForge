@@ -1,4 +1,4 @@
-// DNS.cpp — шапка ДОЛЖНА выглядеть примерно так:
+// DNS.cpp — реализация RAII-класса настройки DNS через реестр
 
 #ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
@@ -7,101 +7,127 @@
 #define NOMINMAX
 #endif
 #ifndef _WIN32_WINNT
-#define _WIN32_WINNT 0x0601 // Win7+
+#define _WIN32_WINNT 0x0601 // Windows 7+
 #endif
-#define _WINSOCKAPI_ // страховка: запретит попадание winsock.h через windows.h
 
-#include <winsock2.h>
+// Порядок критичен для WinSock/WinAPI:
+#include <winsock2.h>   // до windows.h
 #include <ws2tcpip.h>
 #include <windows.h>
 #include <iphlpapi.h>
 #include <netioapi.h>
 #include <objbase.h>
+#include <stringapiset.h>
+
 #include <string>
 #include <vector>
+#include <stdexcept>
 
-#include "DNS.hpp" // ← ТОЛЬКО здесь, после winsock2/ws2tcpip/windows
+#include "DNS.hpp"
 
 #pragma comment(lib, "Ws2_32.lib")
 #pragma comment(lib, "iphlpapi.lib")
 #pragma comment(lib, "Ole32.lib")
 
-namespace
-{
+// ===== helpers =====
 
-std::wstring g_last_err;
-
-void set_err(const std::wstring &msg)
+[[noreturn]] void DNS::Throw(const std::string &msg_utf8)
 {
-    g_last_err = msg;
+    throw std::runtime_error(msg_utf8);
 }
 
-void set_err_win(const std::wstring &msg,
-                 DWORD code)
+[[noreturn]] void DNS::ThrowWin(const std::string &prefix_utf8,
+                                DWORD              code)
 {
-    g_last_err = msg + L", Win32=" + std::to_wstring(code);
+    std::string m = prefix_utf8;
+    m += " (Win32=";
+    m += std::to_string(code);
+    m += ")";
+    throw std::runtime_error(m);
 }
 
-bool is_ipv4(const std::wstring &s)
+std::string DNS::Utf8(const std::wstring &ws)
+{
+    if (ws.empty())
+    {
+        return std::string();
+    }
+    int len = ::WideCharToMultiByte(CP_UTF8, 0, ws.c_str(),
+                                    static_cast<int>(ws.size()),
+                                    nullptr, 0, nullptr, nullptr);
+    if (len <= 0)
+    {
+        ThrowWin("WideCharToMultiByte(size) failed", GetLastError());
+    }
+    std::string out;
+    out.resize(len);
+    len = ::WideCharToMultiByte(CP_UTF8, 0, ws.c_str(),
+                                static_cast<int>(ws.size()),
+                                out.data(), len, nullptr, nullptr);
+    if (len <= 0)
+    {
+        ThrowWin("WideCharToMultiByte(copy) failed", GetLastError());
+    }
+    return out;
+}
+
+bool DNS::IsIPv4(const std::wstring &s) noexcept
 {
     IN_ADDR a{};
     return InetPtonW(AF_INET, s.c_str(), &a) == 1;
 }
 
-bool is_ipv6(const std::wstring &s)
+bool DNS::IsIPv6(const std::wstring &s) noexcept
 {
     IN6_ADDR a{};
     return InetPtonW(AF_INET6, s.c_str(), &a) == 1;
 }
 
-bool luid_to_guid_string(const NET_LUID &luid,
-                         std::wstring &guid_str)
+std::wstring DNS::JoinComma(const std::vector<std::wstring> &list)
+{
+    std::wstring out;
+    out.reserve(32 * list.size());
+    for (size_t i = 0; i < list.size(); ++i)
+    {
+        if (i)
+        {
+            out.push_back(L',');
+        }
+        out.append(list[i]);
+    }
+    return out;
+}
+
+void DNS::LuidToGuidString(std::wstring &out)
 {
     GUID guid{};
-    if (ConvertInterfaceLuidToGuid(&luid, &guid) != NO_ERROR)
+    if (ConvertInterfaceLuidToGuid(&luid_, &guid) != NO_ERROR)
     {
-        set_err(L"ConvertInterfaceLuidToGuid failed");
-        return false;
+        Throw("ConvertInterfaceLuidToGuid failed");
     }
 
     wchar_t buf[64]{};
     const int n = StringFromGUID2(guid, buf, static_cast<int>(std::size(buf)));
     if (n <= 0)
     {
-        set_err(L"StringFromGUID2 failed");
-        return false;
+        Throw("StringFromGUID2 failed");
     }
-
-    guid_str.assign(buf);
-    return !guid_str.empty();
-}
-
-std::wstring join_comma(const std::vector<std::wstring> &addrs)
-{
-    std::wstring out;
-    out.reserve(64 * addrs.size());
-    for (std::size_t i = 0; i < addrs.size(); ++i)
+    out.assign(buf);
+    if (out.empty())
     {
-        if (i)
-        {
-            out.push_back(L',');
-        }
-        out.append(addrs[i]);
+        Throw("Empty GUID string");
     }
-    return out;
 }
 
-bool open_interface_key(const std::wstring &base_path,
-                        const std::wstring &guid_str,
-                        REGSAM access,
-                        HKEY &hkey_out)
+void DNS::OpenInterfaceKey(const std::wstring &base_path,
+                           const std::wstring &guid_str,
+                           REGSAM              access,
+                           HKEY               &hkey_out)
 {
     hkey_out = nullptr;
-
     std::wstring path = base_path;
     path += guid_str;
 
-    // Открываем существующий ключ (создавать ключ интерфейса нельзя).
     const LSTATUS st = RegOpenKeyExW(HKEY_LOCAL_MACHINE,
                                      path.c_str(),
                                      0,
@@ -109,43 +135,121 @@ bool open_interface_key(const std::wstring &base_path,
                                      &hkey_out);
     if (st != ERROR_SUCCESS)
     {
-        set_err_win(L"RegOpenKeyExW failed for " + path, static_cast<DWORD>(st));
-        return false;
+        ThrowWin("RegOpenKeyExW failed: " + Utf8(path), static_cast<DWORD>(st));
     }
-    return true;
 }
 
-bool write_name_server(HKEY hkey,
-                       const std::wstring &value) // пустая строка => удалить
+void DNS::WriteNameServer(HKEY                hkey,
+                          const std::wstring &value)
 {
     if (value.empty())
     {
         const LSTATUS del = RegDeleteValueW(hkey, L"NameServer");
         if (del == ERROR_SUCCESS || del == ERROR_FILE_NOT_FOUND)
         {
-            return true;
+            return;
         }
-        set_err_win(L"RegDeleteValueW(NameServer) failed", static_cast<DWORD>(del));
-        return false;
+        ThrowWin("RegDeleteValueW(NameServer) failed", static_cast<DWORD>(del));
     }
-
-    // REG_SZ, UTF-16, включая завершающий нуль
-    const DWORD bytes = static_cast<DWORD>((value.size() + 1) * sizeof(wchar_t));
-    const LSTATUS st = RegSetValueExW(hkey,
-                                      L"NameServer",
-                                      0,
-                                      REG_SZ,
-                                      reinterpret_cast<const BYTE *>(value.c_str()),
-                                      bytes);
-    if (st != ERROR_SUCCESS)
+    else
     {
-        set_err_win(L"RegSetValueExW(NameServer) failed", static_cast<DWORD>(st));
-        return false;
+        const DWORD bytes = static_cast<DWORD>((value.size() + 1) * sizeof(wchar_t));
+        const LSTATUS st  = RegSetValueExW(hkey,
+                                           L"NameServer",
+                                           0,
+                                           REG_SZ,
+                                           reinterpret_cast<const BYTE *>(value.c_str()),
+                                           bytes);
+        if (st != ERROR_SUCCESS)
+        {
+            ThrowWin("RegSetValueExW(NameServer) failed", static_cast<DWORD>(st));
+        }
     }
-    return true;
 }
 
-void flush_resolver_cache()
+void DNS::ReadNameServer(const std::wstring &base_path,
+                         std::wstring       &out_value,
+                         bool               &present)
+{
+    present = false;
+    out_value.clear();
+
+    HKEY hkey = nullptr;
+    OpenInterfaceKey(base_path, guid_str_, KEY_QUERY_VALUE, hkey);
+
+    DWORD  type  = 0;
+    DWORD  bytes = 0;
+    LSTATUS st   = RegQueryValueExW(hkey, L"NameServer", nullptr, &type, nullptr, &bytes);
+    if (st == ERROR_FILE_NOT_FOUND)
+    {
+        RegCloseKey(hkey);
+        present = false;
+        return;
+    }
+    if (st != ERROR_SUCCESS || type != REG_SZ || bytes == 0)
+    {
+        RegCloseKey(hkey);
+        ThrowWin("RegQueryValueExW(NameServer) failed", static_cast<DWORD>(st));
+    }
+
+    std::wstring buf;
+    buf.resize(bytes / sizeof(wchar_t));
+    st = RegQueryValueExW(hkey,
+                          L"NameServer",
+                          nullptr,
+                          &type,
+                          reinterpret_cast<LPBYTE>(buf.data()),
+                          &bytes);
+    RegCloseKey(hkey);
+    if (st != ERROR_SUCCESS || type != REG_SZ)
+    {
+        ThrowWin("RegQueryValueExW(NameServer #2) failed", static_cast<DWORD>(st));
+    }
+
+    if (!buf.empty() && buf.back() == L'\0')
+    {
+        buf.pop_back();
+    }
+
+    out_value = std::move(buf);
+    present   = true;
+}
+
+std::wstring DNS::BasePathForAf(int af) const
+{
+    return (af == AF_INET)
+               ? L"SYSTEM\\CurrentControlSet\\Services\\Tcpip\\Parameters\\Interfaces\\"
+               : L"SYSTEM\\CurrentControlSet\\Services\\Tcpip6\\Parameters\\Interfaces\\";
+}
+
+void DNS::SetForFamily(int                              af,
+                       const std::vector<std::wstring> &servers)
+{
+    if (servers.empty())
+    {
+        return;
+    }
+
+    const std::wstring value = JoinComma(servers);
+    const std::wstring base  = BasePathForAf(af);
+
+    HKEY hkey = nullptr;
+    OpenInterfaceKey(base, guid_str_, KEY_SET_VALUE, hkey);
+    WriteNameServer(hkey, value);
+    RegCloseKey(hkey);
+}
+
+void DNS::UnsetForFamily(int af)
+{
+    const std::wstring base = BasePathForAf(af);
+
+    HKEY hkey = nullptr;
+    OpenInterfaceKey(base, guid_str_, KEY_SET_VALUE, hkey);
+    WriteNameServer(hkey, L"");
+    RegCloseKey(hkey);
+}
+
+void DNS::FlushResolverCache() noexcept
 {
     using PFN_Flush = BOOL(WINAPI *)(VOID);
     HMODULE dnsapi = LoadLibraryW(L"dnsapi.dll");
@@ -161,127 +265,184 @@ void flush_resolver_cache()
     FreeLibrary(dnsapi);
 }
 
-bool set_dns_for_family(const std::wstring &guid_str,
-                        int af,
-                        const std::vector<std::wstring> &servers)
+// ===== ctors/dtors =====
+
+DNS::DNS(const NET_LUID &luid) noexcept
 {
-    if (servers.empty())
-    {
-        return true;
-    }
-
-    const std::wstring value = join_comma(servers);
-    const std::wstring base = (af == AF_INET)
-                                  ? L"SYSTEM\\CurrentControlSet\\Services\\Tcpip\\Parameters\\Interfaces\\"
-                                  : L"SYSTEM\\CurrentControlSet\\Services\\Tcpip6\\Parameters\\Interfaces\\";
-
-    HKEY hkey = nullptr;
-    if (!open_interface_key(base, guid_str, KEY_SET_VALUE, hkey))
-    {
-        return false;
-    }
-
-    const bool ok = write_name_server(hkey, value);
-    RegCloseKey(hkey);
-    return ok;
+    luid_ = luid;
 }
 
-bool unset_dns_for_family(const std::wstring &guid_str,
-                          int af)
+DNS::~DNS()
 {
-    const std::wstring base = (af == AF_INET)
-                                  ? L"SYSTEM\\CurrentControlSet\\Services\\Tcpip\\Parameters\\Interfaces\\"
-                                  : L"SYSTEM\\CurrentControlSet\\Services\\Tcpip6\\Parameters\\Interfaces\\";
-
-    HKEY hkey = nullptr;
-    if (!open_interface_key(base, guid_str, KEY_SET_VALUE, hkey))
+    try
     {
-        return false;
+        Revert();
     }
-
-    const bool ok = write_name_server(hkey, L""); // удаляем NameServer => возврат к DHCP/автонастройке
-    RegCloseKey(hkey);
-    return ok;
+    catch (...)
+    {
+        // no-throw
+    }
 }
 
-} // namespace
-
-namespace DNS
+DNS::DNS(DNS &&other) noexcept
 {
+    *this = std::move(other);
+}
 
-bool Dns_Set(NET_LUID luid,
-             const std::vector<std::wstring> &servers,
-             const std::wstring &/*suffix*/) noexcept
+DNS &DNS::operator=(DNS &&other) noexcept
 {
-    g_last_err.clear();
+    if (this != &other)
+    {
+        try
+        {
+            Revert();
+        }
+        catch (...)
+        {
+            // no-throw
+        }
+
+        luid_     = other.luid_;
+        guid_str_ = std::move(other.guid_str_);
+        applied_  = other.applied_;
+
+        prev_v4_present_ = other.prev_v4_present_;
+        prev_v6_present_ = other.prev_v6_present_;
+        prev_v4_         = std::move(other.prev_v4_);
+        prev_v6_         = std::move(other.prev_v6_);
+        touched_v4_      = other.touched_v4_;
+        touched_v6_      = other.touched_v6_;
+
+        other.applied_         = false;
+        other.touched_v4_      = false;
+        other.touched_v6_      = false;
+        other.prev_v4_present_ = false;
+        other.prev_v6_present_ = false;
+    }
+    return *this;
+}
+
+// ===== API =====
+
+void DNS::Apply(const std::vector<std::wstring> &servers)
+{
+    touched_v4_ = touched_v6_ = false;
+    prev_v4_present_ = prev_v6_present_ = false;
+    prev_v4_.clear();
+    prev_v6_.clear();
 
     if (servers.empty())
     {
-        set_err(L"servers is empty");
-        return false;
+        throw std::invalid_argument("DNS.Apply: servers list is empty");
     }
 
-    std::vector<std::wstring> v4;
-    std::vector<std::wstring> v6;
+    if (guid_str_.empty())
+    {
+        LuidToGuidString(guid_str_);
+    }
+
+    std::vector<std::wstring> v4, v6;
     v4.reserve(servers.size());
     v6.reserve(servers.size());
-
     for (const auto &s : servers)
     {
-        if (is_ipv4(s))
+        if (IsIPv4(s))
         {
             v4.push_back(s);
         }
-        else if (is_ipv6(s))
+        else if (IsIPv6(s))
         {
             v6.push_back(s);
         }
         else
         {
-            set_err(L"Invalid IP address: " + s);
-            return false;
+            throw std::invalid_argument("DNS.Apply: invalid IP address: " + Utf8(s));
         }
     }
 
-    std::wstring guid_str;
-    if (!luid_to_guid_string(luid, guid_str))
+    ReadNameServer(BasePathForAf(AF_INET),  prev_v4_, prev_v4_present_);
+    ReadNameServer(BasePathForAf(AF_INET6), prev_v6_, prev_v6_present_);
+
+    if (!v4.empty())
     {
-        return false;
+        SetForFamily(AF_INET, v4);
+        touched_v4_ = true;
+    }
+    if (!v6.empty())
+    {
+        SetForFamily(AF_INET6, v6);
+        touched_v6_ = true;
     }
 
-    if (!set_dns_for_family(guid_str, AF_INET, v4))
-    {
-        return false;
-    }
-    if (!set_dns_for_family(guid_str, AF_INET6, v6))
-    {
-        return false;
-    }
-
-    flush_resolver_cache();
-    return true;
+    FlushResolverCache();
+    applied_ = true;
 }
 
-bool Dns_Unset(NET_LUID luid) noexcept
+void DNS::Revert()
 {
-    g_last_err.clear();
-
-    std::wstring guid_str;
-    if (!luid_to_guid_string(luid, guid_str))
+    if (!applied_)
     {
-        return false;
+        return;
     }
 
-    const bool ok4 = unset_dns_for_family(guid_str, AF_INET);
-    const bool ok6 = unset_dns_for_family(guid_str, AF_INET6);
+    bool any_error = false;
 
-    flush_resolver_cache();
-    return ok4 && ok6;
+    if (touched_v4_)
+    {
+        try
+        {
+            if (prev_v4_present_)
+            {
+                HKEY hkey = nullptr;
+                OpenInterfaceKey(BasePathForAf(AF_INET), guid_str_, KEY_SET_VALUE, hkey);
+                WriteNameServer(hkey, prev_v4_);
+                RegCloseKey(hkey);
+            }
+            else
+            {
+                UnsetForFamily(AF_INET);
+            }
+        }
+        catch (...)
+        {
+            any_error = true;
+        }
+    }
+
+    if (touched_v6_)
+    {
+        try
+        {
+            if (prev_v6_present_)
+            {
+                HKEY hkey = nullptr;
+                OpenInterfaceKey(BasePathForAf(AF_INET6), guid_str_, KEY_SET_VALUE, hkey);
+                WriteNameServer(hkey, prev_v6_);
+                RegCloseKey(hkey);
+            }
+            else
+            {
+                UnsetForFamily(AF_INET6);
+            }
+        }
+        catch (...)
+        {
+            any_error = true;
+        }
+    }
+
+    FlushResolverCache();
+
+    applied_            = false;
+    touched_v4_         = false;
+    touched_v6_         = false;
+    prev_v4_present_    = false;
+    prev_v6_present_    = false;
+    prev_v4_.clear();
+    prev_v6_.clear();
+
+    if (any_error)
+    {
+        Throw("DNS.Revert: one or more operations failed");
+    }
 }
-
-std::wstring Dns_LastError()
-{
-    return g_last_err;
-}
-
-} // namespace DNS
