@@ -24,8 +24,7 @@ using ssize_t = SSIZE_T;
 #include <cstring>
 #include <iostream>
 #include <string>
-
-NET_LUID luid{};
+#include <set>
 
 static volatile sig_atomic_t working = true;
 
@@ -111,6 +110,88 @@ bool IsElevated() noexcept
     return ok && elev.TokenIsElevated;
 }
 
+/**
+ * @brief Возвращает полный путь к текущему исполняемому файлу (.exe).
+ * @throw std::runtime_error при ошибке WinAPI.
+ */
+static std::wstring GetModuleFullPathW()
+{
+    std::wstring path(MAX_PATH, L'\0');
+    DWORD n = GetModuleFileNameW(nullptr, path.data(), static_cast<DWORD>(path.size()));
+    if (n == 0)
+    {
+        throw std::runtime_error("GetModuleFileNameW failed");
+    }
+    if (n >= path.size())
+    {
+        std::wstring big(4096, L'\0');
+        n = GetModuleFileNameW(nullptr, big.data(), static_cast<DWORD>(big.size()));
+        if (n == 0 || n >= big.size())
+        {
+            throw std::runtime_error("GetModuleFileNameW failed (long path)");
+        }
+        big.resize(n);
+        return big;
+    }
+    path.resize(n);
+    return path;
+}
+
+/**
+ * @brief Резолвит хост/адрес в список IPv4/IPv6 адресов для поля Firewall RemoteAddresses.
+ *        Возвращает CSV-строку адресов без пробелов (поддерживает IPv6).
+ *        Если резолв не удался — возвращает исходную строку (без скобок).
+ */
+static std::wstring ResolveFirewallAddressesW(const std::string &host)
+{
+    std::string h = strip_brackets(host);
+    addrinfo hints{};
+    hints.ai_family   = AF_UNSPEC;
+    hints.ai_socktype = SOCK_DGRAM;
+    addrinfo *res = nullptr;
+    if (getaddrinfo(h.c_str(), nullptr, &hints, &res) != 0)
+    {
+        return utf8_to_wide(h);
+    }
+    std::set<std::wstring> uniq;
+    wchar_t buf4[INET_ADDRSTRLEN]{};
+    wchar_t buf6[INET6_ADDRSTRLEN]{};
+    for (addrinfo *ai = res; ai; ai = ai->ai_next)
+    {
+        if (ai->ai_family == AF_INET)
+        {
+            auto *sa = reinterpret_cast<sockaddr_in*>(ai->ai_addr);
+            if (InetNtopW(AF_INET, &sa->sin_addr, buf4, INET_ADDRSTRLEN))
+            {
+                uniq.insert(buf4);
+            }
+        }
+        else if (ai->ai_family == AF_INET6)
+        {
+            auto *sa6 = reinterpret_cast<sockaddr_in6*>(ai->ai_addr);
+            if (InetNtopW(AF_INET6, &sa6->sin6_addr, buf6, INET6_ADDRSTRLEN))
+            {
+                uniq.insert(buf6);
+            }
+        }
+    }
+    freeaddrinfo(res);
+    if (uniq.empty())
+    {
+        return utf8_to_wide(h);
+    }
+    std::wstring out;
+    for (auto it = uniq.begin(); it != uniq.end(); ++it)
+    {
+        if (!out.empty())
+        {
+            out = L",";
+        }
+        out = *it;
+    }
+    return out;
+}
+
 int main(int argc,
          char **argv)
 {
@@ -175,13 +256,15 @@ int main(int argc,
         return 1;
     }
 
-    static FirewallRules::ClientRule cfg{
+    const std::wstring exe_path_w = GetModuleFullPathW();
+    const std::wstring fw_addrs_w = ResolveFirewallAddressesW(server_ip);
+    FirewallRules::ClientRule cfg{
         .rule_prefix = L"FlowForge",
-        .app_path    = L"C:\\Users\\choix\\CLionProjects\\FlowForge\\build\\bin\\Client.exe",
-        .server_ip   = L"193.233.23.221"
+        .app_path    = exe_path_w,
+        .server_ip   = fw_addrs_w
     };
     FirewallRules fw(cfg); // RAII
-    fw.Allow(FirewallRules::Protocol::UDP, 5555);
+    fw.Allow(FirewallRules::Protocol::UDP, port);
 
     auto plugin = PluginWrapper::Load(plugin_path);
     if (!plugin.handle)
@@ -204,6 +287,7 @@ int main(int argc,
         }
     }
 
+    NET_LUID luid{};
     Wintun.GetLuid(adapter, &luid);
     NetworkRollback rollback(luid, server_ip); // RAII: снимок + авто-откат в деструкторе
 
@@ -212,19 +296,39 @@ int main(int argc,
 
     auto reapply = [&]()
     {
+        bool v4_ok = false;
+        bool v6_ok = false;
+
         try
         {
-            Network::ConfigureNetwork(adapter, server_ip, Network::IpVersion::V4);
-            Network::ConfigureNetwork(adapter, server_ip, Network::IpVersion::V6);
+            Network::ConfigureNetwork(adapter,
+                                      server_ip,
+                                      Network::IpVersion::V4);
+            v4_ok = true;
         }
         catch (const std::exception &e)
         {
-            std::cerr << "ConfigureNetwork error: " << e.what() << "\n";
-            Wintun.Close(adapter);
-            PluginWrapper::Unload(plugin);
-            WSACleanup();
+            std::cerr << "[reapply] IPv4 configure failed: " << e.what() << "\n";
+        }
+
+        try
+        {
+            Network::ConfigureNetwork(adapter,
+                                      server_ip,
+                                      Network::IpVersion::V6);
+            v6_ok = true;
+        }
+        catch (const std::exception &e)
+        {
+            std::cerr << "[reapply] IPv6 configure failed: " << e.what() << "\n";
+        }
+
+        if (!v4_ok && !v6_ok)
+        {
+            std::cerr << "[reapply] FATAL: neither IPv4 nor IPv6 configured\n";
         }
     };
+
 
     reapply();
     NetWatcher nw(reapply, std::chrono::milliseconds(1500));
