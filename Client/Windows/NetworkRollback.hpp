@@ -24,7 +24,7 @@
 #pragma comment(lib, "ws2_32.lib")
 #pragma comment(lib, "iphlpapi.lib")
 
-namespace netrb
+namespace NetworkRollback
 {
 
 struct Baseline
@@ -82,4 +82,4 @@ bool RemovePinnedRouteToServer(const char *serverIp) noexcept;
 bool RollbackAll(const Baseline &b,
                  const char *serverIp) noexcept;
 
-} // namespace netrb
+} // namespace NetworkRollback

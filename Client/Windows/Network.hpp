@@ -31,6 +31,9 @@
 
 // ---------- helpers ----------
 
+namespace Network
+{
+
 /**
  * @brief Ищет лучший IPv4 default-маршрут, исключая указанный интерфейс.
  * @param exclude Интерфейс (NET_LUID), который нужно исключить.
@@ -257,3 +260,5 @@ bool add_route_via_gateway_v6(const NET_LUID &ifLuid,
                               UINT8 prefixLen,
                               const char *gateway_ip6,
                               ULONG metric);
+
+}

@@ -121,7 +121,7 @@ static bool get_rules(INetFwRules **out_rules)
     return true;
 }
 
-static std::wstring make_client_rule_name(const fw::ClientRule &c,
+static std::wstring make_client_rule_name(const FirewallRules::ClientRule &c,
                                           bool is_tcp)
 {
     return c.rule_prefix + (is_tcp ? L" Out TCP to " : L" Out UDP to ")
@@ -160,7 +160,7 @@ static bool upsert_rule(INetFwRule *rule)
     return true;
 }
 
-static bool create_outbound_rule(const fw::ClientRule &c,
+static bool create_outbound_rule(const FirewallRules::ClientRule &c,
                                  long ip_proto,                // NET_FW_IP_PROTOCOL_TCP/UDP
                                  const wchar_t *name_suffix,   // L"UDP"/L"TCP"
                                  const wchar_t *desc)
@@ -200,7 +200,7 @@ static bool create_outbound_rule(const fw::ClientRule &c,
 
 } // anonymous namespace
 
-namespace fw
+namespace FirewallRules
 {
 
 bool EnsureClientOutboundUdp(const ClientRule &c)
@@ -320,4 +320,4 @@ std::wstring LastError()
     return g_last_error;
 }
 
-} // namespace fw
+} // namespace FirewallRules

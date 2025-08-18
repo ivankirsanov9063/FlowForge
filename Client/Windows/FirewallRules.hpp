@@ -9,7 +9,7 @@
 #include <string>
 #include <cstdint>
 
-namespace fw
+namespace FirewallRules
 {
 
     // Параметры правила для клиента:
@@ -45,4 +45,4 @@ namespace fw
      */
     std::wstring LastError();
 
-} // namespace fw
+} // namespace FirewallRules

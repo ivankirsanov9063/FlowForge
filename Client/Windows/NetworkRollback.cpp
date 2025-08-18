@@ -107,7 +107,7 @@ bool delete_routes_where(ADDRESS_FAMILY fam,
 
 } // namespace
 
-namespace netrb
+namespace NetworkRollback
 {
 
 bool CaptureBaseline(const NET_LUID &ifLuid,
@@ -213,4 +213,4 @@ bool RollbackAll(const Baseline &b,
     return ok;
 }
 
-} // namespace netrb
+} // namespace NetworkRollback

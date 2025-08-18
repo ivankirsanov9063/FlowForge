@@ -6,14 +6,14 @@
 #include <chrono>
 #include <functional>
 
-namespace nw
+namespace NetWatcher
 {
 
     /// Ваш обработчик переустановки сетевых настроек (маршруты, DNS, метрики и т.п.)
     using ReapplyFn = std::function<void()>;
 
     // Opaque-хэндлы, чтобы не тянуть <Windows.h> в заголовок
-    struct NetWatcher
+    struct Watcher
     {
         void    *hStop       = nullptr; // HANDLE (manual-reset)
         void    *hKick       = nullptr; // HANDLE (auto-reset)
@@ -31,7 +31,7 @@ namespace nw
      * @param debounce Интервал дебаунса (по умолчанию 1500 мс).
      * @return true при успешном запуске, иначе false.
      */
-    bool StartNetWatcher(NetWatcher &w,
+    bool StartNetWatcher(Watcher &w,
                          ReapplyFn reapply,
                          std::chrono::milliseconds debounce = std::chrono::milliseconds(1500)) noexcept;
 
@@ -39,6 +39,6 @@ namespace nw
      * @brief Останавливает вотчер и освобождает ресурсы.
      * @param w Экземпляр вотчера.
      */
-    void StopNetWatcher(NetWatcher &w) noexcept;
+    void StopNetWatcher(Watcher &w) noexcept;
 
-} // namespace nw
+} // namespace NetWatcher

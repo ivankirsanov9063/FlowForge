@@ -36,7 +36,7 @@ VOID CALLBACK IpIfChangeCb(PVOID ctx,
                            PMIB_IPINTERFACE_ROW /*row*/,
                            MIB_NOTIFICATION_TYPE /*type*/)
 {
-    auto *w = reinterpret_cast<nw::NetWatcher *>(ctx);
+    auto *w = reinterpret_cast<NetWatcher::Watcher *>(ctx);
     if (w && w->hKick)
     {
         ::SetEvent(H(w->hKick));
@@ -47,7 +47,7 @@ VOID CALLBACK RouteChangeCb(PVOID ctx,
                             PMIB_IPFORWARD_ROW2 /*row*/,
                             MIB_NOTIFICATION_TYPE /*type*/)
 {
-    auto *w = reinterpret_cast<nw::NetWatcher *>(ctx);
+    auto *w = reinterpret_cast<NetWatcher::Watcher *>(ctx);
     if (w && w->hKick)
     {
         ::SetEvent(H(w->hKick));
@@ -56,7 +56,7 @@ VOID CALLBACK RouteChangeCb(PVOID ctx,
 
 DWORD WINAPI WorkerThread(LPVOID param)
 {
-    auto *w = reinterpret_cast<nw::NetWatcher *>(param);
+    auto *w = reinterpret_cast<NetWatcher::Watcher *>(param);
     assert(w && w->hStop && w->hKick);
 
     HANDLE wait_set[2] = {H(w->hStop), H(w->hKick)};
@@ -114,10 +114,10 @@ DWORD WINAPI WorkerThread(LPVOID param)
 
 } // namespace
 
-namespace nw
+namespace NetWatcher
 {
 
-bool StartNetWatcher(NetWatcher &w,
+bool StartNetWatcher(Watcher &w,
                      ReapplyFn reapply,
                      std::chrono::milliseconds debounce) noexcept
 {
@@ -172,7 +172,7 @@ bool StartNetWatcher(NetWatcher &w,
     return true;
 }
 
-void StopNetWatcher(NetWatcher &w) noexcept
+void StopNetWatcher(Watcher &w) noexcept
 {
     // Отписаться от уведомлений (можно в любом порядке)
     if (w.hIfNotif)
@@ -214,4 +214,4 @@ void StopNetWatcher(NetWatcher &w) noexcept
     w.reapply = {};
 }
 
-} // namespace nw
+} // namespace NetWatcher

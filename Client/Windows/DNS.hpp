@@ -8,7 +8,7 @@
 #include <windows.h>
 #include <iphlpapi.h>
 
-namespace dns
+namespace DNS
 {
 
     /**
@@ -35,4 +35,4 @@ namespace dns
      */
     std::wstring Dns_LastError();
 
-} // namespace dns
+} // namespace DNS

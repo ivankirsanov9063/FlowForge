@@ -25,31 +25,31 @@ using ssize_t = SSIZE_T;
 #include <iostream>
 #include <string>
 
-static fw::ClientRule cfg{
+static FirewallRules::ClientRule cfg{
     .rule_prefix = L"FlowForge",
     .app_path    = L"C:\\Users\\choix\\CLionProjects\\FlowForge\\build\\bin\\Client.exe",
     .server_ip   = L"193.233.23.221",
     .udp_port    = 5555
 };
 
-nw::NetWatcher watcher;
+NetWatcher::Watcher watcher;
 NET_LUID luid{};
-netrb::Baseline base{};
+NetworkRollback::Baseline base{};
 
 static volatile sig_atomic_t working = true;
 
 static void on_exit(int)
 {
-    nw::StopNetWatcher(watcher);
+    NetWatcher::StopNetWatcher(watcher);
 
-    netrb::RollbackAll(base, reinterpret_cast<const char *>(cfg.server_ip.c_str()));
+    NetworkRollback::RollbackAll(base, reinterpret_cast<const char *>(cfg.server_ip.c_str()));
 
-    if (!fw::RemoveByPrefix(cfg.rule_prefix))
+    if (!FirewallRules::RemoveByPrefix(cfg.rule_prefix))
     {
-        std::wcerr << L"[ERR] RemoveByPrefix failed: " << fw::LastError() << L"\n";
+        std::wcerr << L"[ERR] RemoveByPrefix failed: " << FirewallRules::LastError() << L"\n";
     }
 
-    if (!dns::Dns_Unset(luid))
+    if (!DNS::Dns_Unset(luid))
     {
         std::wcerr << L"[ERR] Dns_Unset failed\n";
     }
@@ -198,10 +198,10 @@ int main(int argc,
         return 1;
     }
 
-    if (!fw::EnsureClientOutboundUdp(cfg))
+    if (!FirewallRules::EnsureClientOutboundUdp(cfg))
     {
         std::cerr << "error EnsureClientOutboundUdp\n";
-        return 1; // залогируйте fw::LastError()
+        return 1; // залогируйте FirewallRules::LastError()
     }
 
     auto plugin = PluginWrapper::Load(plugin_path);
@@ -226,17 +226,17 @@ int main(int argc,
     }
 
     Wintun.GetLuid(adapter, &luid);
-    netrb::CaptureBaseline(luid, base);
+    NetworkRollback::CaptureBaseline(luid, base);
 
     std::vector<std::wstring> dns_servers = {L"10.8.0.1", L"1.1.1.1"}; // IPv4/IPv6 можно смешивать
-    if (!dns::Dns_Set(luid, dns_servers /*, L"corp.local"*/))
+    if (!DNS::Dns_Set(luid, dns_servers /*, L"corp.local"*/))
     {
-        std::wcerr << L"[DNS] set failed: " << dns::Dns_LastError() << L"\n";
+        std::wcerr << L"[DNS] set failed: " << DNS::Dns_LastError() << L"\n";
     }
 
     auto reapply = [&]()
     {
-        if (ConfigureNetwork_Base(adapter) != 0)
+        if (Network::ConfigureNetwork_Base(adapter) != 0)
         {
             std::cerr << "ConfigureNetwork_Base failed\n";
             Wintun.Close(adapter);
@@ -244,14 +244,14 @@ int main(int argc,
             WSACleanup();
         }
 
-        bool pin_ok_local = ConfigureNetwork_PinServer(adapter, server_ip);
+        bool pin_ok_local = Network::ConfigureNetwork_PinServer(adapter, server_ip);
         if (!pin_ok_local)
         {
             std::cerr << "[ABORT SWITCH] pin to server failed — leaving default routes unchanged\n";
         }
         else
         {
-            if (!ConfigureNetwork_ActivateDefaults(adapter))
+            if (!Network::ConfigureNetwork_ActivateDefaults(adapter))
             {
                 std::cerr << "ConfigureNetwork_ActivateDefaults failed (continuing)\n";
             }
@@ -260,13 +260,13 @@ int main(int argc,
 
     reapply();
 
-    if (!nw::StartNetWatcher(watcher, reapply, std::chrono::milliseconds(1500)))
+    if (!NetWatcher::StartNetWatcher(watcher, reapply, std::chrono::milliseconds(1500)))
     {
         std::cerr << "Error in StartNetWatcher\n";
         return 1;
     }
 
-    if (ConfigureNetwork_Base(adapter) != 0)
+    if (Network::ConfigureNetwork_Base(adapter) != 0)
     {
         std::cerr << "ConfigureNetwork_Base failed\n";
         Wintun.Close(adapter);
@@ -275,7 +275,7 @@ int main(int argc,
         return 1;
     }
 
-    bool pin_ok = ConfigureNetwork_PinServer(adapter, server_ip);
+    bool pin_ok = Network::ConfigureNetwork_PinServer(adapter, server_ip);
 
     WINTUN_SESSION_HANDLE sess = Wintun.Start(adapter, 0x20000);
     if (!sess)

@@ -206,7 +206,7 @@ bool unset_dns_for_family(const std::wstring &guid_str,
 
 } // namespace
 
-namespace dns
+namespace DNS
 {
 
 bool Dns_Set(NET_LUID luid,
@@ -284,4 +284,4 @@ std::wstring Dns_LastError()
     return g_last_err;
 }
 
-} // namespace dns
+} // namespace DNS

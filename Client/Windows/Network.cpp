@@ -2,6 +2,9 @@
 
 // ============================ HELPERS ============================
 
+namespace Network
+{
+
 std::optional<MIB_IPFORWARD_ROW2> fallback_default_route_excluding(const NET_LUID &exclude)
 {
     PMIB_IPFORWARD_TABLE2 tbl = nullptr;
@@ -696,4 +699,6 @@ bool add_route_via_gateway_v6(const NET_LUID &ifLuid,
                     prefix, static_cast<unsigned>(prefixLen), gateway_ip6, err);
     }
     return (err == NO_ERROR || err == ERROR_OBJECT_ALREADY_EXISTS);
+}
+
 }
