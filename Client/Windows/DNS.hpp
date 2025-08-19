@@ -7,9 +7,6 @@
 #ifndef NOMINMAX
 #define NOMINMAX
 #endif
-#ifndef _WIN32_WINNT
-#define _WIN32_WINNT 0x0601 // Windows 7+
-#endif
 // Предотвращаем подтягивание winsock.h через <windows.h>
 #ifndef _WINSOCKAPI_
 #define _WINSOCKAPI_

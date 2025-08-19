@@ -47,6 +47,7 @@ static std::wstring utf8_to_wide(const std::string &s)
 {
     if (s.empty())
     {
+        LOGT("client") << "utf8_to_wide: empty input";
         return std::wstring();
     }
     int len = MultiByteToWideChar(CP_UTF8, 0, s.c_str(), -1, nullptr, 0);
@@ -72,27 +73,24 @@ static void debug_packet_info(const std::uint8_t *data,
     {
         std::uint32_t src = (data[12] << 24) | (data[13] << 16) | (data[14] << 8) | data[15];
         std::uint32_t dst = (data[16] << 24) | (data[17] << 16) | (data[18] << 8) | data[19];
-        std::printf(
-            "[%s] IPv4: %u.%u.%u.%u -> %u.%u.%u.%u (len=%zu)\n",
-            direction,
-            (src >> 24) & 0xff,
-            (src >> 16) & 0xff,
-            (src >> 8) & 0xff,
-            src & 0xff,
-            (dst >> 24) & 0xff,
-            (dst >> 16) & 0xff,
-            (dst >> 8) & 0xff,
-            dst & 0xff,
-            len
-        );
+        LOGT("tun") << "[" << direction << "] IPv4: "
+                    << ((src >> 24) & 0xff) << "."
+                    << ((src >> 16) & 0xff) << "."
+                    << ((src >> 8) & 0xff)  << "."
+                    << (src & 0xff) << " -> "
+                    << ((dst >> 24) & 0xff) << "."
+                    << ((dst >> 16) & 0xff) << "."
+                    << ((dst >> 8) & 0xff)  << "."
+                    << (dst & 0xff) << " (len=" << len << ")";
     }
     else if (version == 6)
     {
-        std::printf("[%s] IPv6 packet (len=%zu)\n", direction, len);
+        LOGT("tun") << "[" << direction << "] IPv6 packet (len=" << len << ")";
     }
     else
     {
-        std::printf("[%s] Unknown packet version=%d (len=%zu)\n", direction, version, len);
+        LOGW("tun") << "[" << direction << "] Unknown packet version=" << static_cast<int>(version)
+                    << " (len=" << len << ")";
     }
 }
 
@@ -101,6 +99,7 @@ bool IsElevated() noexcept
     HANDLE h_token = nullptr;
     if (!OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &h_token))
     {
+        LOGW("client") << "OpenProcessToken failed; assuming not elevated";
         return false;
     }
 
@@ -117,10 +116,12 @@ bool IsElevated() noexcept
  */
 static std::wstring GetModuleFullPathW()
 {
+    LOGD("client") << "Querying module path";
     std::wstring path(MAX_PATH, L'\0');
     DWORD n = GetModuleFileNameW(nullptr, path.data(), static_cast<DWORD>(path.size()));
     if (n == 0)
     {
+        LOGE("client") << "GetModuleFileNameW failed";
         throw std::runtime_error("GetModuleFileNameW failed");
     }
     if (n >= path.size())
@@ -129,12 +130,15 @@ static std::wstring GetModuleFullPathW()
         n = GetModuleFileNameW(nullptr, big.data(), static_cast<DWORD>(big.size()));
         if (n == 0 || n >= big.size())
         {
+            LOGE("client") << "GetModuleFileNameW failed (long path)";
             throw std::runtime_error("GetModuleFileNameW failed (long path)");
         }
         big.resize(n);
+        LOGD("client") << "Module path resolved (len=" << big.size() << ")";
         return big;
     }
     path.resize(n);
+    LOGD("client") << "Module path resolved (len=" << path.size() << ")";
     return path;
 }
 
@@ -145,6 +149,7 @@ static std::wstring GetModuleFullPathW()
  */
 static std::wstring ResolveFirewallAddressesW(const std::string &host)
 {
+    LOGD("firewallrules") << "Resolving server addresses for: " << host;
     std::string h = strip_brackets(host);
     addrinfo hints{};
     hints.ai_family   = AF_UNSPEC;
@@ -152,6 +157,7 @@ static std::wstring ResolveFirewallAddressesW(const std::string &host)
     addrinfo *res = nullptr;
     if (getaddrinfo(h.c_str(), nullptr, &hints, &res) != 0)
     {
+        LOGW("firewallrules") << "getaddrinfo failed; using literal: " << h;
         return utf8_to_wide(h);
     }
     std::set<std::wstring> uniq;
@@ -179,6 +185,7 @@ static std::wstring ResolveFirewallAddressesW(const std::string &host)
     freeaddrinfo(res);
     if (uniq.empty())
     {
+        LOGW("firewallrules") << "Resolution produced no addresses; using literal: " << h;
         return utf8_to_wide(h);
     }
     std::wstring out;
@@ -190,6 +197,7 @@ static std::wstring ResolveFirewallAddressesW(const std::string &host)
         }
         out = *it;
     }
+    LOGD("firewallrules") << "Resolved RemoteAddresses prepared";
     return out;
 }
 
@@ -204,6 +212,7 @@ int main(int argc,
     logger_options.console_min_severity = boost::log::trivial::debug;
 
     Logger::Guard logger(logger_options);            // одна инициализация на процесс
+    LOGI("client") << "Starting FlowForge";
 
     if (!IsElevated())
     {
@@ -216,6 +225,7 @@ int main(int argc,
     int port = 5555;
     std::string plugin_path = "PlugUDP.dll";
 
+    LOGD("client") << "Parsing CLI arguments";
     for (int i = 1; i < argc; ++i)
     {
         std::string a = argv[i];
@@ -237,34 +247,38 @@ int main(int argc,
         }
         else if (a == "-h" || a == "--help")
         {
-            std::cerr << "Usage: Client --server <ip|ipv6> [--port 5555] [--tun cvpn0] [--plugin PlugUDP.dll]\n";
+            LOGI("client") << "Usage: Client --server <ip|ipv6> [--port 5555] [--tun cvpn0] [--plugin PlugUDP.dll]";
             return 0;
         }
     }
+    LOGD("client") << "Args: tun=" << tun << " server=" << server_ip << " port=" << port << " plugin=" << plugin_path;
 
     if (server_ip.empty())
     {
-        std::cerr << "Client: --server <ip|ipv6> required\n";
+        LOGE("client") << "Client: --server <ip|ipv6> required";
         return 1;
     }
 
     server_ip = strip_brackets(server_ip);
+    LOGD("client") << "Normalized server: " << server_ip;
 
     const GUID TUNNEL_TYPE = {0x53bded60, 0xb6c8, 0x49ab, {0x86, 0x12, 0x6f, 0xa5, 0x56, 0x8f, 0xc5, 0x4d}};
     const GUID REQ_GUID    = {0xbaf1c3a1, 0x5175, 0x4a68, {0x9b, 0x4b, 0x2c, 0x3d, 0x6f, 0x1f, 0x00, 0x11}};
 
     if (!Wintun.load())
     {
-        std::cerr << "Failed to load wintun.dll\n";
+        LOGE("tun") << "Failed to load wintun.dll";
         return 1;
     }
+    LOGI("tun") << "Loaded wintun.dll";
 
     WSADATA wsa;
     if (WSAStartup(MAKEWORD(2, 2), &wsa) != 0)
     {
-        std::cerr << "WSAStartup failed\n";
+        LOGE("client") << "WSAStartup failed";
         return 1;
     }
+    LOGD("client") << "WSAStartup OK (2.2)";
 
     const std::wstring exe_path_w = GetModuleFullPathW();
     const std::wstring fw_addrs_w = ResolveFirewallAddressesW(server_ip);
@@ -274,14 +288,19 @@ int main(int argc,
         .server_ip   = fw_addrs_w
     };
     FirewallRules fw(cfg); // RAII
+    LOGI("firewallrules") << "Firewall rules prepared";
     fw.Allow(FirewallRules::Protocol::UDP, port);
+    LOGI("firewallrules") << "Allow UDP port " << port;
 
+    LOGD("pluginwrapper") << "Loading plugin: " << plugin_path;
     auto plugin = PluginWrapper::Load(plugin_path);
     if (!plugin.handle)
     {
+        LOGE("pluginwrapper") << "Failed to load plugin: " << plugin_path;
         WSACleanup();
         return 1;
     }
+    LOGI("pluginwrapper") << "Plugin loaded: " << plugin_path;
 
     std::wstring wname = utf8_to_wide(tun);
     WINTUN_ADAPTER_HANDLE adapter = Wintun.Open(wname.c_str());
@@ -290,22 +309,32 @@ int main(int argc,
         adapter = Wintun.Create(wname.c_str(), &TUNNEL_TYPE, &REQ_GUID);
         if (!adapter)
         {
-            std::cerr << "WintunCreateAdapter failed\n";
+            LOGE("tun") << "WintunCreateAdapter failed";
             PluginWrapper::Unload(plugin);
             WSACleanup();
             return 1;
         }
+        LOGI("tun") << "Adapter created: " << tun;
+    }
+    else
+    {
+        LOGI("tun") << "Adapter opened: " << tun;
     }
 
     NET_LUID luid{};
     Wintun.GetLuid(adapter, &luid);
+    LOGD("tun") << "Adapter LUID acquired";
+
     NetworkRollback rollback(luid, server_ip); // RAII: снимок + авто-откат в деструкторе
+    LOGI("networkrollback") << "Baseline snapshot captured (rollback armed)";
 
     DNS dns(luid);
     dns.Apply({L"10.8.0.1", L"1.1.1.1"});
+    LOGI("dns") << "Applying DNS: 10.8.0.1, 1.1.1.1";
 
     auto reapply = [&]()
     {
+        LOGD("netwatcher") << "Reconfiguring routes for server " << server_ip;
         bool v4_ok = false;
         bool v6_ok = false;
 
@@ -315,10 +344,11 @@ int main(int argc,
                                       server_ip,
                                       Network::IpVersion::V4);
             v4_ok = true;
+            LOGI("netwatcher") << "IPv4 configured";
         }
         catch (const std::exception &e)
         {
-            std::cerr << "[reapply] IPv4 configure failed: " << e.what() << "\n";
+            LOGE("netwatcher") << "IPv4 configure failed: " << e.what();
         }
 
         try
@@ -327,48 +357,51 @@ int main(int argc,
                                       server_ip,
                                       Network::IpVersion::V6);
             v6_ok = true;
+            LOGI("netwatcher") << "IPv6 configured";
         }
         catch (const std::exception &e)
         {
-            std::cerr << "[reapply] IPv6 configure failed: " << e.what() << "\n";
+            LOGE("netwatcher") << "IPv6 configure failed: " << e.what();
         }
 
         if (!v4_ok && !v6_ok)
         {
-            std::cerr << "[reapply] FATAL: neither IPv4 nor IPv6 configured\n";
+            LOGF("netwatcher") << "Neither IPv4 nor IPv6 configured";
         }
     };
 
-
     reapply();
     NetWatcher nw(reapply, std::chrono::milliseconds(1500));
+    LOGD("netwatcher") << "NetWatcher armed (interval=1500ms)";
 
     WINTUN_SESSION_HANDLE sess = Wintun.Start(adapter, 0x20000);
     if (!sess)
     {
-        std::cerr << "WintunStartSession failed\n";
+        LOGE("tun") << "WintunStartSession failed";
         Wintun.Close(adapter);
         PluginWrapper::Unload(plugin);
         WSACleanup();
         return 1;
     }
-
-    std::cout << "Wintun up: " << tun << "\n";
+    LOGI("tun") << "Session started (ring=0x20000)";
+    LOGI("tun") << "Up: " << tun;
 
     if (!PluginWrapper::Client_Connect(plugin,
                                        server_ip,
                                        static_cast<std::uint16_t>(port)))
     {
-        std::cerr << "Client_Connect failed\n";
+        LOGE("pluginwrapper") << "Client_Connect failed";
         Wintun.End(sess);
         Wintun.Close(adapter);
         PluginWrapper::Unload(plugin);
         WSACleanup();
         return 1;
     }
+    LOGI("pluginwrapper") << "Connected to " << server_ip << ":" << port;
 
     std::signal(SIGINT, on_exit);
     std::signal(SIGTERM, on_exit);
+    LOGD("client") << "Signal handlers installed (SIGINT,SIGTERM)";
 
     auto send_to_net = [sess](const std::uint8_t *data,
                               std::size_t len) -> ssize_t
@@ -377,10 +410,12 @@ int main(int argc,
         BYTE *out = Wintun.AllocSend(sess, static_cast<DWORD>(len));
         if (!out)
         {
+            LOGW("tun") << "AllocSend returned null (drop)";
             return 0;
         }
         std::memcpy(out, data, len);
         Wintun.Send(sess, out);
+        LOGT("tun") << "TO_NET len=" << len;
         return static_cast<ssize_t>(len);
     };
 
@@ -391,6 +426,7 @@ int main(int argc,
         BYTE *pkt = Wintun.Recv(sess, &pkt_size);
         if (!pkt)
         {
+            LOGT("tun") << "Recv returned null (no packet)";
             return 0;
         }
 
@@ -398,23 +434,33 @@ int main(int argc,
 
         if (pkt_size > size)
         {
+            LOGW("tun") << "FROM_NET oversized pkt_size=" << pkt_size << " > buf=" << size;
             Wintun.RecvRelease(sess, pkt);
             return -1;
         }
         std::memcpy(buffer, pkt, pkt_size);
         Wintun.RecvRelease(sess, pkt);
+        LOGT("tun") << "FROM_NET len=" << pkt_size;
         return static_cast<ssize_t>(pkt_size);
     };
 
+    LOGI("pluginwrapper") << "Serve loop started";
     int rc = PluginWrapper::Client_Serve(plugin,
                                          receive_from_net,
                                          send_to_net,
                                          &working);
+    LOGI("pluginwrapper") << "Serve loop exited rc=" << rc;
 
+    LOGD("pluginwrapper") << "Disconnecting client";
     PluginWrapper::Client_Disconnect(plugin);
+    LOGD("tun") << "Ending session";
     Wintun.End(sess);
+    LOGD("tun") << "Closing adapter";
     Wintun.Close(adapter);
+    LOGD("pluginwrapper") << "Unloading plugin";
     PluginWrapper::Unload(plugin);
+    LOGD("client") << "WSACleanup";
     WSACleanup();
+    LOGI("client") << "Shutdown complete";
     return rc;
 }

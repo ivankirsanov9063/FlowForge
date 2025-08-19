@@ -6,9 +6,6 @@
 #ifndef NOMINMAX
 #define NOMINMAX
 #endif
-#ifndef _WIN32_WINNT
-#define _WIN32_WINNT 0x0601 // Windows 7+
-#endif
 
 // Порядок критичен для WinSock/WinAPI:
 #include <winsock2.h>   // до windows.h
@@ -24,6 +21,7 @@
 #include <stdexcept>
 
 #include "DNS.hpp"
+#include "Logger.hpp"
 
 #pragma comment(lib, "Ws2_32.lib")
 #pragma comment(lib, "iphlpapi.lib")
@@ -33,12 +31,14 @@
 
 [[noreturn]] void DNS::Throw(const std::string &msg_utf8)
 {
+    LOGE("dns") << "Throw: " << msg_utf8;
     throw std::runtime_error(msg_utf8);
 }
 
 [[noreturn]] void DNS::ThrowWin(const std::string &prefix_utf8,
                                 DWORD              code)
 {
+    LOGE("dns") << prefix_utf8 << " (Win32=" << code << ")";
     std::string m = prefix_utf8;
     m += " (Win32=";
     m += std::to_string(code);
@@ -50,6 +50,7 @@ std::string DNS::Utf8(const std::wstring &ws)
 {
     if (ws.empty())
     {
+        LOGT("dns") << "Utf8: empty input";
         return std::string();
     }
     int len = ::WideCharToMultiByte(CP_UTF8, 0, ws.c_str(),
@@ -68,6 +69,7 @@ std::string DNS::Utf8(const std::wstring &ws)
     {
         ThrowWin("WideCharToMultiByte(copy) failed", GetLastError());
     }
+    LOGT("dns") << "Utf8: converted " << ws.size() << " wide chars to " << out.size() << " bytes";
     return out;
 }
 
@@ -100,6 +102,7 @@ std::wstring DNS::JoinComma(const std::vector<std::wstring> &list)
 
 void DNS::LuidToGuidString(std::wstring &out)
 {
+    LOGD("dns") << "LuidToGuidString: converting LUID to GUID";
     GUID guid{};
     if (ConvertInterfaceLuidToGuid(&luid_, &guid) != NO_ERROR)
     {
@@ -117,6 +120,7 @@ void DNS::LuidToGuidString(std::wstring &out)
     {
         Throw("Empty GUID string");
     }
+    LOGD("dns") << "LuidToGuidString: GUID string acquired";
 }
 
 void DNS::OpenInterfaceKey(const std::wstring &base_path,
@@ -128,6 +132,7 @@ void DNS::OpenInterfaceKey(const std::wstring &base_path,
     std::wstring path = base_path;
     path += guid_str;
 
+    LOGD("dns") << "OpenInterfaceKey: " << Utf8(path);
     const LSTATUS st = RegOpenKeyExW(HKEY_LOCAL_MACHINE,
                                      path.c_str(),
                                      0,
@@ -137,6 +142,7 @@ void DNS::OpenInterfaceKey(const std::wstring &base_path,
     {
         ThrowWin("RegOpenKeyExW failed: " + Utf8(path), static_cast<DWORD>(st));
     }
+    LOGT("dns") << "OpenInterfaceKey: success";
 }
 
 void DNS::WriteNameServer(HKEY                hkey,
@@ -144,6 +150,7 @@ void DNS::WriteNameServer(HKEY                hkey,
 {
     if (value.empty())
     {
+        LOGD("dns") << "WriteNameServer: delete NameServer";
         const LSTATUS del = RegDeleteValueW(hkey, L"NameServer");
         if (del == ERROR_SUCCESS || del == ERROR_FILE_NOT_FOUND)
         {
@@ -153,6 +160,7 @@ void DNS::WriteNameServer(HKEY                hkey,
     }
     else
     {
+        LOGD("dns") << "WriteNameServer: set NameServer to '" << Utf8(value) << "'";
         const DWORD bytes = static_cast<DWORD>((value.size() + 1) * sizeof(wchar_t));
         const LSTATUS st  = RegSetValueExW(hkey,
                                            L"NameServer",
@@ -183,6 +191,7 @@ void DNS::ReadNameServer(const std::wstring &base_path,
     if (st == ERROR_FILE_NOT_FOUND)
     {
         RegCloseKey(hkey);
+        LOGT("dns") << "ReadNameServer: NameServer not present";
         present = false;
         return;
     }
@@ -213,6 +222,7 @@ void DNS::ReadNameServer(const std::wstring &base_path,
 
     out_value = std::move(buf);
     present   = true;
+    LOGD("dns") << "ReadNameServer: present, len=" << out_value.size();
 }
 
 std::wstring DNS::BasePathForAf(int af) const
@@ -227,6 +237,7 @@ void DNS::SetForFamily(int                              af,
 {
     if (servers.empty())
     {
+        LOGT("dns") << "SetForFamily: no servers for af=" << af;
         return;
     }
 
@@ -234,9 +245,11 @@ void DNS::SetForFamily(int                              af,
     const std::wstring base  = BasePathForAf(af);
 
     HKEY hkey = nullptr;
+    LOGD("dns") << "SetForFamily: af=" << af << " servers='" << Utf8(value) << "'";
     OpenInterfaceKey(base, guid_str_, KEY_SET_VALUE, hkey);
     WriteNameServer(hkey, value);
     RegCloseKey(hkey);
+    LOGI("dns") << "SetForFamily: NameServer set for af=" << af;
 }
 
 void DNS::UnsetForFamily(int af)
@@ -244,23 +257,32 @@ void DNS::UnsetForFamily(int af)
     const std::wstring base = BasePathForAf(af);
 
     HKEY hkey = nullptr;
+    LOGD("dns") << "UnsetForFamily: af=" << af;
     OpenInterfaceKey(base, guid_str_, KEY_SET_VALUE, hkey);
     WriteNameServer(hkey, L"");
     RegCloseKey(hkey);
+    LOGI("dns") << "UnsetForFamily: NameServer cleared for af=" << af;
 }
 
 void DNS::FlushResolverCache() noexcept
 {
     using PFN_Flush = BOOL(WINAPI *)(VOID);
+    LOGD("dns") << "FlushResolverCache: loading dnsapi.dll";
     HMODULE dnsapi = LoadLibraryW(L"dnsapi.dll");
     if (!dnsapi)
     {
+        LOGW("dns") << "FlushResolverCache: LoadLibraryW(dnsapi.dll) failed";
         return;
     }
     auto p_flush = reinterpret_cast<PFN_Flush>(GetProcAddress(dnsapi, "DnsFlushResolverCache"));
     if (p_flush)
     {
         (void)p_flush();
+        LOGD("dns") << "FlushResolverCache: called";
+    }
+    else
+    {
+        LOGW("dns") << "FlushResolverCache: GetProcAddress failed";
     }
     FreeLibrary(dnsapi);
 }
@@ -270,22 +292,27 @@ void DNS::FlushResolverCache() noexcept
 DNS::DNS(const NET_LUID &luid) noexcept
 {
     luid_ = luid;
+    LOGD("dns") << "DNS: constructed";
 }
 
 DNS::~DNS()
 {
     try
     {
+        LOGD("dns") << "DNS: destructor -> Revert()";
         Revert();
+        LOGD("dns") << "DNS: revert completed";
     }
     catch (...)
     {
         // no-throw
+        LOGW("dns") << "DNS: exception swallowed in destructor during Revert()";
     }
 }
 
 DNS::DNS(DNS &&other) noexcept
 {
+    LOGT("dns") << "DNS: move-ctor";
     *this = std::move(other);
 }
 
@@ -293,12 +320,14 @@ DNS &DNS::operator=(DNS &&other) noexcept
 {
     if (this != &other)
     {
+        LOGT("dns") << "DNS: move-assign";
         try
         {
             Revert();
         }
         catch (...)
         {
+            LOGW("dns") << "DNS: exception swallowed in move-assign Revert()";
             // no-throw
         }
 
@@ -326,6 +355,7 @@ DNS &DNS::operator=(DNS &&other) noexcept
 
 void DNS::Apply(const std::vector<std::wstring> &servers)
 {
+    LOGI("dns") << "Apply: begin, servers=" << servers.size();
     touched_v4_ = touched_v6_ = false;
     prev_v4_present_ = prev_v6_present_ = false;
     prev_v4_.clear();
@@ -333,6 +363,7 @@ void DNS::Apply(const std::vector<std::wstring> &servers)
 
     if (servers.empty())
     {
+        LOGE("dns") << "Apply: servers list is empty";
         throw std::invalid_argument("DNS.Apply: servers list is empty");
     }
 
@@ -356,12 +387,16 @@ void DNS::Apply(const std::vector<std::wstring> &servers)
         }
         else
         {
+            LOGE("dns") << "Apply: invalid IP address: " << Utf8(s);
             throw std::invalid_argument("DNS.Apply: invalid IP address: " + Utf8(s));
         }
     }
+    LOGD("dns") << "Apply: parsed v4=" << v4.size() << " v6=" << v6.size();
 
     ReadNameServer(BasePathForAf(AF_INET),  prev_v4_, prev_v4_present_);
     ReadNameServer(BasePathForAf(AF_INET6), prev_v6_, prev_v6_present_);
+    LOGD("dns") << "Apply: prev_v4_present=" << prev_v4_present_
+                << " prev_v6_present=" << prev_v6_present_;
 
     if (!v4.empty())
     {
@@ -376,15 +411,18 @@ void DNS::Apply(const std::vector<std::wstring> &servers)
 
     FlushResolverCache();
     applied_ = true;
+    LOGI("dns") << "Apply: done (touched v4=" << touched_v4_ << ", v6=" << touched_v6_ << ")";
 }
 
 void DNS::Revert()
 {
     if (!applied_)
     {
+        LOGT("dns") << "Revert: nothing to do";
         return;
     }
 
+    LOGI("dns") << "Revert: begin (touched v4=" << touched_v4_ << ", v6=" << touched_v6_ << ")";
     bool any_error = false;
 
     if (touched_v4_)
@@ -397,14 +435,17 @@ void DNS::Revert()
                 OpenInterfaceKey(BasePathForAf(AF_INET), guid_str_, KEY_SET_VALUE, hkey);
                 WriteNameServer(hkey, prev_v4_);
                 RegCloseKey(hkey);
+                LOGD("dns") << "Revert: restored IPv4 NameServer";
             }
             else
             {
                 UnsetForFamily(AF_INET);
+                LOGD("dns") << "Revert: cleared IPv4 NameServer";
             }
         }
         catch (...)
         {
+            LOGE("dns") << "Revert: IPv4 restore failed";
             any_error = true;
         }
     }
@@ -419,14 +460,17 @@ void DNS::Revert()
                 OpenInterfaceKey(BasePathForAf(AF_INET6), guid_str_, KEY_SET_VALUE, hkey);
                 WriteNameServer(hkey, prev_v6_);
                 RegCloseKey(hkey);
+                LOGD("dns") << "Revert: restored IPv6 NameServer";
             }
             else
             {
                 UnsetForFamily(AF_INET6);
+                LOGD("dns") << "Revert: cleared IPv6 NameServer";
             }
         }
         catch (...)
         {
+            LOGE("dns") << "Revert: IPv6 restore failed";
             any_error = true;
         }
     }
@@ -445,4 +489,5 @@ void DNS::Revert()
     {
         Throw("DNS.Revert: one or more operations failed");
     }
+    LOGI("dns") << "Revert: done";
 }

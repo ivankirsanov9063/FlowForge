@@ -1,4 +1,5 @@
 #include "Network.hpp"
+#include "Logger.hpp"
 
 // ============================ HELPERS ============================
 
@@ -51,6 +52,7 @@ void set_if_metric(const NET_LUID &ifLuid,
     row.InterfaceLuid = ifLuid;
     if (GetIpInterfaceEntry(&row) != NO_ERROR)
     {
+        LOGE("tun") << "GetIpInterfaceEntry failed for metric";
         throw std::runtime_error("GetIpInterfaceEntry failed for metric");
     }
 
@@ -60,14 +62,16 @@ void set_if_metric(const NET_LUID &ifLuid,
     DWORD err = SetIpInterfaceEntry(&row);
     if (err == ERROR_INVALID_PARAMETER)
     {
-        std::printf("[WARN] SetIpInterfaceEntry(%s metric=%lu) rc=87, ignored\n",
-                    family_tag(ver), metric);
+        LOGW("tun") << "SetIpInterfaceEntry(" << family_tag(ver)
+                    << " metric=" << metric << ") rc=87, ignored";
         return;
     }
     if (err != NO_ERROR)
     {
+        LOGE("tun") << "SetIpInterfaceEntry(metric) failed rc=" << err;
         throw std::runtime_error("SetIpInterfaceEntry(metric) failed");
     }
+    LOGD("tun") << "Interface metric set: " << family_tag(ver) << " metric=" << metric;
 }
 
 void set_if_mtu(const NET_LUID &ifLuid,
@@ -80,6 +84,7 @@ void set_if_mtu(const NET_LUID &ifLuid,
     row.InterfaceLuid = ifLuid;
     if (GetIpInterfaceEntry(&row) != NO_ERROR)
     {
+        LOGE("tun") << "GetIpInterfaceEntry failed for mtu";
         throw std::runtime_error("GetIpInterfaceEntry failed for mtu");
     }
 
@@ -88,14 +93,16 @@ void set_if_mtu(const NET_LUID &ifLuid,
     DWORD err = SetIpInterfaceEntry(&row);
     if (err == ERROR_INVALID_PARAMETER)
     {
-        std::printf("[WARN] SetIpInterfaceEntry(%s mtu=%lu) rc=87, ignored\n",
-                    family_tag(ver), mtu);
+        LOGW("tun") << "SetIpInterfaceEntry(" << family_tag(ver)
+                    << " mtu=" << mtu << ") rc=87, ignored";
         return;
     }
     if (err != NO_ERROR)
     {
+        LOGE("tun") << "SetIpInterfaceEntry(mtu) failed rc=" << err;
         throw std::runtime_error("SetIpInterfaceEntry(mtu) failed");
     }
+    LOGD("tun") << "Interface MTU set: " << family_tag(ver) << " mtu=" << mtu;
 }
 
 void add_ip_address_on_if(const NET_LUID &ifLuid,
@@ -114,6 +121,7 @@ void add_ip_address_on_if(const NET_LUID &ifLuid,
         row.Address.Ipv6.sin6_scope_id = 0;
         if (!ipv6_from_string_(ip, row.Address.Ipv6.sin6_addr))
         {
+            LOGE("tun") << "add_ip_address_on_if: invalid IPv6 '" << ip << "'";
             throw std::invalid_argument("add_ip_address_on_if: invalid IPv6");
         }
     }
@@ -121,6 +129,7 @@ void add_ip_address_on_if(const NET_LUID &ifLuid,
     {
         if (!ipv4_from_string_(ip, row.Address.Ipv4.sin_addr))
         {
+            LOGE("tun") << "add_ip_address_on_if: invalid IPv4 '" << ip << "'";
             throw std::invalid_argument("add_ip_address_on_if: invalid IPv4");
         }
     }
@@ -133,13 +142,21 @@ void add_ip_address_on_if(const NET_LUID &ifLuid,
     row.OnLinkPrefixLength = prefixLen;
 
     DWORD err = CreateUnicastIpAddressEntry(&row);
-    if (err == NO_ERROR) return;
+    if (err == NO_ERROR)
+    {
+        LOGI("tun") << "Unicast IP added: " << family_tag(ver) << " " << ip << "/" << (unsigned)prefixLen;
+        return;
+    }
     if (err == ERROR_OBJECT_ALREADY_EXISTS)
     {
-        if (SetUnicastIpAddressEntry(&row) == NO_ERROR) return;
+        if (SetUnicastIpAddressEntry(&row) == NO_ERROR)
+        {
+            LOGI("tun") << "Unicast IP updated: " << family_tag(ver) << " " << ip << "/" << (unsigned)prefixLen;
+            return;
+        }
     }
-    std::printf("[ERR] Create/SetUnicastIpAddressEntry(%s %s/%u) rc=%lu\n",
-                family_tag(ver), ip, static_cast<unsigned>(prefixLen), err);
+    LOGE("tun") << "Create/SetUnicastIpAddressEntry(" << family_tag(ver)
+                << " " << ip << "/" << (unsigned)prefixLen << ") rc=" << err;
     throw std::runtime_error("add_ip_address_on_if failed");
 }
 
@@ -158,6 +175,7 @@ void add_onlink_host_route(const NET_LUID &ifLuid,
         r.DestinationPrefix.Prefix.Ipv6.sin6_family = AF_INET6;
         if (!ipv6_from_string_(ip, r.DestinationPrefix.Prefix.Ipv6.sin6_addr))
         {
+            LOGE("tun") << "add_onlink_host_route: invalid IPv6 '" << ip << "'";
             throw std::invalid_argument("add_onlink_host_route: invalid IPv6");
         }
         r.DestinationPrefix.PrefixLength = 128;
@@ -169,6 +187,7 @@ void add_onlink_host_route(const NET_LUID &ifLuid,
     {
         if (!ipv4_from_string_(ip, r.DestinationPrefix.Prefix.Ipv4.sin_addr))
         {
+            LOGE("tun") << "add_onlink_host_route: invalid IPv4 '" << ip << "'";
             throw std::invalid_argument("add_onlink_host_route: invalid IPv4");
         }
         r.DestinationPrefix.PrefixLength = 32;
@@ -180,11 +199,14 @@ void add_onlink_host_route(const NET_LUID &ifLuid,
     r.Protocol = MIB_IPPROTO_NETMGMT;
 
     DWORD err = CreateIpForwardEntry2(&r);
-    if (!(err == NO_ERROR || err == ERROR_OBJECT_ALREADY_EXISTS))
+    if (err == NO_ERROR || err == ERROR_OBJECT_ALREADY_EXISTS)
     {
-        std::printf("[ERR] add_onlink_host_route(%s %s) rc=%lu\n", family_tag(ver), ip, err);
-        throw std::runtime_error("add_onlink_host_route failed");
+        LOGI("tun") << "On-link host route ensured: " << family_tag(ver)
+                    << " " << ip << " metric=" << metric;
+        return;
     }
+    LOGE("tun") << "add_onlink_host_route(" << family_tag(ver) << " " << ip << ") rc=" << err;
+    throw std::runtime_error("add_onlink_host_route failed");
 }
 
 void add_onlink_route(const NET_LUID &ifLuid,
@@ -203,6 +225,7 @@ void add_onlink_route(const NET_LUID &ifLuid,
         r.DestinationPrefix.Prefix.Ipv6.sin6_family = AF_INET6;
         if (!ipv6_from_string_(prefix, r.DestinationPrefix.Prefix.Ipv6.sin6_addr))
         {
+            LOGE("tun") << "add_onlink_route: invalid IPv6 prefix '" << prefix << "'";
             throw std::invalid_argument("add_onlink_route: invalid IPv6 prefix");
         }
     }
@@ -210,6 +233,7 @@ void add_onlink_route(const NET_LUID &ifLuid,
     {
         if (!ipv4_from_string_(prefix, r.DestinationPrefix.Prefix.Ipv4.sin_addr))
         {
+            LOGE("tun") << "add_onlink_route: invalid IPv4 prefix '" << prefix << "'";
             throw std::invalid_argument("add_onlink_route: invalid IPv4 prefix");
         }
     }
@@ -230,23 +254,29 @@ void add_onlink_route(const NET_LUID &ifLuid,
     r.Protocol = MIB_IPPROTO_NETMGMT;
 
     DWORD err = CreateIpForwardEntry2(&r);
-    if (!(err == NO_ERROR || err == ERROR_OBJECT_ALREADY_EXISTS))
+    if (err == NO_ERROR || err == ERROR_OBJECT_ALREADY_EXISTS)
     {
-        std::printf("[ERR] add_onlink_route(%s %s/%u) rc=%lu\n",
-                    family_tag(ver), prefix, static_cast<unsigned>(prefixLen), err);
-        throw std::runtime_error("add_onlink_route failed");
+        LOGI("tun") << "On-link route ensured: " << family_tag(ver)
+                    << " " << prefix << "/" << (unsigned)prefixLen
+                    << " metric=" << metric;
+        return;
     }
+    LOGE("tun") << "add_onlink_route(" << family_tag(ver) << " " << prefix
+                << "/" << (unsigned)prefixLen << ") rc=" << err;
+    throw std::runtime_error("add_onlink_route failed");
 }
 
 std::optional<MIB_IPFORWARD_ROW2> get_best_route_to_generic(const char *dest_ip,
                                                             IpVersion ver)
 {
+    LOGT("tun") << "get_best_route_to_generic: " << family_tag(ver) << " " << dest_ip;
     SOCKADDR_INET dst{};
     dst.si_family = fam(ver);
     if (ver == IpVersion::V6)
     {
         if (!ipv6_from_string_(dest_ip, dst.Ipv6.sin6_addr))
         {
+            LOGE("tun") << "get_best_route_to_generic: invalid IPv6 '" << dest_ip << "'";
             throw std::invalid_argument("get_best_route_to_generic: invalid IPv6");
         }
     }
@@ -254,6 +284,7 @@ std::optional<MIB_IPFORWARD_ROW2> get_best_route_to_generic(const char *dest_ip,
     {
         if (!ipv4_from_string_(dest_ip, dst.Ipv4.sin_addr))
         {
+            LOGE("tun") << "get_best_route_to_generic: invalid IPv4 '" << dest_ip << "'";
             throw std::invalid_argument("get_best_route_to_generic: invalid IPv4");
         }
     }
@@ -262,8 +293,10 @@ std::optional<MIB_IPFORWARD_ROW2> get_best_route_to_generic(const char *dest_ip,
     DWORD rc = GetBestRoute2(nullptr, 0, nullptr, &dst, 0, &route, nullptr);
     if (rc == NO_ERROR)
     {
+        LOGD("tun") << "get_best_route_to_generic: found (IfLuid=" << route.InterfaceLuid.Value << ")";
         return route;
     }
+    LOGT("tun") << "get_best_route_to_generic: no route";
     // нет маршрута — это не ошибка, просто отсутствует
     return std::nullopt;
 }
@@ -271,10 +304,13 @@ std::optional<MIB_IPFORWARD_ROW2> get_best_route_to_generic(const char *dest_ip,
 std::optional<MIB_IPFORWARD_ROW2> fallback_default_route_excluding(const NET_LUID &exclude,
                                                                    IpVersion ver)
 {
+    LOGT("tun") << "fallback_default_route_excluding: searching default excluding IfLuid=" << exclude.Value
+                << " family=" << family_tag(ver);
     PMIB_IPFORWARD_TABLE2 tbl = nullptr;
     DWORD rc = GetIpForwardTable2(fam(ver), &tbl);
     if (rc != NO_ERROR)
     {
+        LOGE("tun") << "GetIpForwardTable2 failed rc=" << rc;
         throw std::runtime_error("GetIpForwardTable2 failed");
     }
 
@@ -288,6 +324,16 @@ std::optional<MIB_IPFORWARD_ROW2> fallback_default_route_excluding(const NET_LUI
         if (!best || row.Metric < best->Metric) best = row;
     }
     if (tbl) FreeMibTable(tbl);
+
+    if (best)
+    {
+        LOGD("tun") << "fallback_default_route_excluding: picked IfLuid=" << best->InterfaceLuid.Value
+                    << " metric=" << best->Metric;
+    }
+    else
+    {
+        LOGT("tun") << "fallback_default_route_excluding: no default found";
+    }
     return best;
 }
 
@@ -298,6 +344,7 @@ void add_or_update_host_route_via(const char *host,
 {
     if (via.DestinationPrefix.Prefix.si_family != fam(ver))
     {
+        LOGE("tun") << "add_or_update_host_route_via: family mismatch";
         throw std::invalid_argument("add_or_update_host_route_via: family mismatch");
     }
 
@@ -311,6 +358,7 @@ void add_or_update_host_route_via(const char *host,
         desired.DestinationPrefix.Prefix.Ipv6.sin6_family = AF_INET6;
         if (!ipv6_from_string_(host, desired.DestinationPrefix.Prefix.Ipv6.sin6_addr))
         {
+            LOGE("tun") << "add_or_update_host_route_via: invalid IPv6 '" << host << "'";
             throw std::invalid_argument("add_or_update_host_route_via: invalid IPv6");
         }
         desired.DestinationPrefix.PrefixLength = 128;
@@ -319,6 +367,7 @@ void add_or_update_host_route_via(const char *host,
     {
         if (!ipv4_from_string_(host, desired.DestinationPrefix.Prefix.Ipv4.sin_addr))
         {
+            LOGE("tun") << "add_or_update_host_route_via: invalid IPv4 '" << host << "'";
             throw std::invalid_argument("add_or_update_host_route_via: invalid IPv4");
         }
         desired.DestinationPrefix.PrefixLength = 32;
@@ -379,8 +428,11 @@ void add_or_update_host_route_via(const char *host,
                 FreeMibTable(tbl);
                 if (rc != NO_ERROR)
                 {
+                    LOGE("tun") << "SetIpForwardEntry2(/host) failed rc=" << rc;
                     throw std::runtime_error("SetIpForwardEntry2(/host) failed");
                 }
+                LOGI("tun") << "Host route updated: " << family_tag(ver)
+                            << " " << host << " metric=" << metric;
                 return;
             }
         }
@@ -391,17 +443,19 @@ void add_or_update_host_route_via(const char *host,
     DWORD rc = CreateIpForwardEntry2(&desired);
     if (rc == NO_ERROR || rc == ERROR_OBJECT_ALREADY_EXISTS)
     {
+        LOGI("tun") << "Host route created/ensured: " << family_tag(ver)
+                    << " " << host << " metric=" << metric;
         return;
     }
 
     // Fallback для Win7 (только IPv4)
     if (ver == IpVersion::V6)
     {
-        std::printf("[ERR] CreateIpForwardEntry2(v6 /128) rc=%lu\n", rc);
+        LOGE("tun") << "CreateIpForwardEntry2(v6 /128) rc=" << rc;
         throw std::runtime_error("CreateIpForwardEntry2(v6 /128) failed");
     }
 
-    std::printf("[WARN] CreateIpForwardEntry2(v4 /32) rc=%lu, trying legacy API...\n", rc);
+    LOGW("tun") << "CreateIpForwardEntry2(v4 /32) rc=" << rc << ", trying legacy API...";
 
     MIB_IPFORWARDROW r{};
     r.dwForwardDest   = desired.DestinationPrefix.Prefix.Ipv4.sin_addr.S_un.S_addr;
@@ -416,9 +470,10 @@ void add_or_update_host_route_via(const char *host,
     DWORD rc2 = CreateIpForwardEntry(&r);
     if (!(rc2 == NO_ERROR || rc2 == ERROR_OBJECT_ALREADY_EXISTS))
     {
-        std::printf("[ERR] CreateIpForwardEntry(legacy v4 /32) rc=%lu\n", rc2);
+        LOGE("tun") << "CreateIpForwardEntry(legacy v4 /32) rc=" << rc2;
         throw std::runtime_error("CreateIpForwardEntry(legacy v4 /32) failed");
     }
+    LOGI("tun") << "Host route (legacy) created/ensured: v4 " << host << " metric=" << metric;
 }
 
 void add_route_via_gateway(const NET_LUID &ifLuid,
@@ -438,6 +493,7 @@ void add_route_via_gateway(const NET_LUID &ifLuid,
         r.DestinationPrefix.Prefix.Ipv6.sin6_family = AF_INET6;
         if (!ipv6_from_string_(prefix, r.DestinationPrefix.Prefix.Ipv6.sin6_addr))
         {
+            LOGE("tun") << "add_route_via_gateway: invalid IPv6 prefix '" << prefix << "'";
             throw std::invalid_argument("add_route_via_gateway: invalid IPv6 prefix");
         }
     }
@@ -445,6 +501,7 @@ void add_route_via_gateway(const NET_LUID &ifLuid,
     {
         if (!ipv4_from_string_(prefix, r.DestinationPrefix.Prefix.Ipv4.sin_addr))
         {
+            LOGE("tun") << "add_route_via_gateway: invalid IPv4 prefix '" << prefix << "'";
             throw std::invalid_argument("add_route_via_gateway: invalid IPv4 prefix");
         }
     }
@@ -456,6 +513,7 @@ void add_route_via_gateway(const NET_LUID &ifLuid,
         r.NextHop.Ipv6.sin6_family = AF_INET6;
         if (!ipv6_from_string_(gateway, r.NextHop.Ipv6.sin6_addr))
         {
+            LOGE("tun") << "add_route_via_gateway: invalid IPv6 gateway '" << gateway << "'";
             throw std::invalid_argument("add_route_via_gateway: invalid IPv6 gateway");
         }
     }
@@ -463,6 +521,7 @@ void add_route_via_gateway(const NET_LUID &ifLuid,
     {
         if (!ipv4_from_string_(gateway, r.NextHop.Ipv4.sin_addr))
         {
+            LOGE("tun") << "add_route_via_gateway: invalid IPv4 gateway '" << gateway << "'";
             throw std::invalid_argument("add_route_via_gateway: invalid IPv4 gateway");
         }
     }
@@ -471,12 +530,17 @@ void add_route_via_gateway(const NET_LUID &ifLuid,
     r.Protocol = MIB_IPPROTO_NETMGMT;
 
     DWORD err = CreateIpForwardEntry2(&r);
-    if (!(err == NO_ERROR || err == ERROR_OBJECT_ALREADY_EXISTS))
+    if (err == NO_ERROR || err == ERROR_OBJECT_ALREADY_EXISTS)
     {
-        std::printf("[ERR] add_route_via_gateway(%s %s/%u via %s) rc=%lu\n",
-                    family_tag(ver), prefix, static_cast<unsigned>(prefixLen), gateway, err);
-        throw std::runtime_error("add_route_via_gateway failed");
+        LOGI("tun") << "Route via gateway ensured: " << family_tag(ver)
+                    << " " << prefix << "/" << (unsigned)prefixLen
+                    << " via " << gateway << " metric=" << metric;
+        return;
     }
+
+    LOGE("tun") << "add_route_via_gateway(" << family_tag(ver) << " " << prefix
+                << "/" << (unsigned)prefixLen << " via " << gateway << ") rc=" << err;
+    throw std::runtime_error("add_route_via_gateway failed");
 }
 
 // ============================== ONE-FAMILY FACADE ===============================
@@ -487,11 +551,15 @@ void ConfigureNetwork(WINTUN_ADAPTER_HANDLE adapter,
 {
     if (!adapter)
     {
+        LOGE("tun") << "ConfigureNetwork: null adapter";
         throw std::invalid_argument("ConfigureNetwork: null adapter");
     }
 
     NET_LUID luid{};
     Wintun.GetLuid(adapter, &luid);
+
+    LOGI("tun") << "ConfigureNetwork: begin family=" << family_tag(ver)
+                << " server=" << server_ip;
 
     // MTU + адрес + метрика
     set_if_mtu(luid, 1400, ver);
@@ -524,16 +592,18 @@ void ConfigureNetwork(WINTUN_ADAPTER_HANDLE adapter,
         if (best)
         {
             add_or_update_host_route_via(server_ip.c_str(), *best, 1, ver);
-            std::printf("[OK ] pinned %s host route to %s via IfLuid=%llu\n",
-                        family_tag(ver),
-                        server_ip.c_str(),
-                        static_cast<unsigned long long>(best->InterfaceLuid.Value));
+            LOGI("tun") << "Pinned " << family_tag(ver) << " host route to " << server_ip
+                        << " via IfLuid=" << static_cast<unsigned long long>(best->InterfaceLuid.Value);
             pinned = true;
         }
         else
         {
-            std::printf("[WARN] no %s route to server before switch\n", family_tag(ver));
+            LOGW("tun") << "No " << family_tag(ver) << " route to server before switch";
         }
+    }
+    else
+    {
+        LOGT("tun") << "Pin not needed: server family differs";
     }
 
     // Активируем split-default через VPN peer — только если pinned успешно
@@ -549,8 +619,10 @@ void ConfigureNetwork(WINTUN_ADAPTER_HANDLE adapter,
             add_route_via_gateway(luid, "0.0.0.0",   1, PEER4, 1, IpVersion::V4);
             add_route_via_gateway(luid, "128.0.0.0", 1, PEER4, 1, IpVersion::V4);
         }
-        std::printf("[OK ] defaults activated via VPN gateway (%s)\n", family_tag(ver));
+        LOGI("tun") << "Defaults activated via VPN gateway (" << family_tag(ver) << ")";
     }
+
+    LOGI("tun") << "ConfigureNetwork: done family=" << family_tag(ver);
 }
 
 } // namespace Network

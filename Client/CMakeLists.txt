@@ -11,6 +11,8 @@ add_executable(Client
         ${CMAKE_SOURCE_DIR}/Logger.cpp
 )
 
+target_compile_definitions(Client PRIVATE _WIN32_WINNT=0x0602 BOOST_USE_WINAPI_VERSION=0x0602)
+
 target_compile_features(Client PRIVATE cxx_std_23)
 
 target_include_directories(Client PRIVATE ${CMAKE_SOURCE_DIR})
