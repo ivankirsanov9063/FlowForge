@@ -8,11 +8,15 @@ add_executable(Client
 
         ${CMAKE_SOURCE_DIR}/PluginWrapper.cpp
         ${CMAKE_SOURCE_DIR}/TUN.cpp
+        ${CMAKE_SOURCE_DIR}/Logger.cpp
 )
 
 target_compile_features(Client PRIVATE cxx_std_23)
 
 target_include_directories(Client PRIVATE ${CMAKE_SOURCE_DIR})
+
+find_package(Boost REQUIRED COMPONENTS log log_setup thread filesystem)
+target_link_libraries(Client PUBLIC Boost::log Boost::log_setup Boost::thread Boost::filesystem)
 
 if (CMAKE_SYSTEM_NAME STREQUAL "Linux")
     find_package(PkgConfig REQUIRED)
@@ -24,7 +28,5 @@ endif()
 if (CMAKE_SYSTEM_NAME STREQUAL "Windows")
     target_link_libraries(Client PRIVATE Ws2_32 Iphlpapi)
 endif()
-
-#target_compile_options(Client PRIVATE /showIncludes)
 
 install(TARGETS Client RUNTIME DESTINATION bin)

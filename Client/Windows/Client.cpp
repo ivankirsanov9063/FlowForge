@@ -1,5 +1,6 @@
 #include "PluginWrapper.hpp"
 #include "TUN.hpp"
+#include "Logger.hpp"
 #include "Network.hpp"
 #include "FirewallRules.hpp"
 #include "NetWatcher.hpp"
@@ -195,9 +196,18 @@ static std::wstring ResolveFirewallAddressesW(const std::string &host)
 int main(int argc,
          char **argv)
 {
+    Logger::Options logger_options;
+    logger_options.app_name = "FlowForge";
+    logger_options.directory = "logs";
+    logger_options.base_filename = "flowforge";
+    logger_options.file_min_severity = boost::log::trivial::info;
+    logger_options.console_min_severity = boost::log::trivial::debug;
+
+    Logger::Guard logger(logger_options);            // одна инициализация на процесс
+
     if (!IsElevated())
     {
-        std::cerr << "Please run this with administration rights!\n";
+        LOGE("client") << "Please run this with administration rights!";
         return 1;
     }
 
