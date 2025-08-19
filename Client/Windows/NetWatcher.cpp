@@ -26,6 +26,11 @@ namespace
 {
     inline HANDLE H(void *p) { return static_cast<HANDLE>(p); }
 
+    inline ULONGLONG NowMs()
+    {
+        return ::GetTickCount64();
+    }
+
     VOID CALLBACK IpIfChangeCb(PVOID ctx,
                                PMIB_IPINTERFACE_ROW /*row*/,
                                MIB_NOTIFICATION_TYPE /*type*/)
@@ -110,11 +115,15 @@ bool NetWatcher::IsRunning() const noexcept
 
 void NetWatcher::Kick() noexcept
 {
-    if (h_kick_)
-    {
-        LOGT("netwatcher") << "Kick: SetEvent";
-        ::SetEvent(H(h_kick_));
-    }
+    const ULONGLONG until = suppress_until_ms_.load(std::memory_order_relaxed);
+    if (NowMs() < until) { return; }
+    if (h_kick_) { ::SetEvent(H(h_kick_)); }
+}
+
+void NetWatcher::Suppress(std::chrono::milliseconds dur) noexcept
+{
+    const ULONGLONG until = NowMs() + static_cast<ULONGLONG>(dur.count());
+    suppress_until_ms_.store(until, std::memory_order_relaxed);
 }
 
 void NetWatcher::Stop()
@@ -156,7 +165,12 @@ unsigned long __stdcall NetWatcher::ThreadMain(void *param)
                     try
                     {
                         LOGI("netwatcher") << "ThreadMain: debounce timeout -> reapply()";
-                        if (w->reapply_) { w->reapply_(); }
+                        if (w->reapply_)
+                        {
+                            // Не ловим собственные Notify* в течение окна дебаунса
+                            w->Suppress(std::chrono::milliseconds(w->debounce_ms_));
+                            w->reapply_();
+                        }
                     }
                     catch (...)
                     {

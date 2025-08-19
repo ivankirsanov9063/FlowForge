@@ -370,7 +370,7 @@ int main(int argc,
         }
     };
 
-    reapply();
+    //reapply();
     NetWatcher nw(reapply, std::chrono::milliseconds(1500));
     LOGD("netwatcher") << "NetWatcher armed (interval=1500ms)";
 

@@ -4,6 +4,10 @@
 #include <chrono>
 #include <functional>
 #include <stdexcept>
+#include <chrono>
+#include <functional>
+#include <stdexcept>
+#include <atomic>
 
 /**
  * @brief RAII-класс: следит за изменениями сети и вызывает колбэк после дебаунса.
@@ -68,6 +72,12 @@ public:
     void Kick() noexcept;
 
     /**
+     * @brief Временно подавить события (игнорировать Kick) на заданный интервал.
+     */
+    void Suppress(std::chrono::milliseconds dur) noexcept;
+
+
+    /**
      * @brief Проверить, запущен ли вотчер.
      * @return true, если поток и подписки активны.
      */
@@ -91,6 +101,8 @@ private:
     ReapplyFn reapply_;
     /** @brief Флаг инициализации (ресурсы подняты). */
     bool started_ = false;
+    /** До какого момента подавлять события (мс, GetTickCount64). */
+    std::atomic<unsigned long long> suppress_until_ms_{0};
 
     /**
      * @brief Запуск ядра: создать события, подписаться, поднять поток.
