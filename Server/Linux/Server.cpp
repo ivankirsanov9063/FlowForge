@@ -2,6 +2,7 @@
 #include "TUN.hpp"
 #include "Network.hpp"
 #include "NetworkRollback.hpp"
+#include "NetWatcher.hpp"
 
 #include <csignal>
 #include <fcntl.h>
@@ -74,6 +75,11 @@ int main(int argc, char **argv)
         PluginWrapper::Unload(plugin);
         return 1;
     }
+
+    // 👉 Включаем вотчер за default route: при смене WAN пересоберёт NAT/MSS
+    //    (используются дефолтные Params; при необходимости передай свои)
+    NetWatcher watcher{ NetConfig::Params{} };
+
 
     if (!PluginWrapper::Server_Bind(plugin,
                                     static_cast<std::uint16_t>(port)))

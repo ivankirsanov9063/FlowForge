@@ -1,6 +1,8 @@
 // Server/Network.hpp
 #pragma once
 
+#include <array>
+#include <cstdint>
 #include <string>
 #include <csignal>
 #include <optional>
