@@ -15,8 +15,7 @@ void on_exit(int)
     working = false;
 }
 
-int main(int argc,
-     char **argv)
+int main(int argc, char **argv)
 {
     std::string tun         = "svpn0";
     int         port        = 5555;
@@ -26,21 +25,29 @@ int main(int argc,
     {
         std::string a = argv[i];
         if (a == "--tun" && i + 1 < argc)
+        {
             tun = argv[++i];
+        }
         else if (a == "--port" && i + 1 < argc)
+        {
             port = std::stoi(argv[++i]);
+        }
         else if (a == "--plugin" && i + 1 < argc)
+        {
             plugin_path = argv[++i];
+        }
         else if (a == "-h" || a == "--help")
         {
-            std::cerr
-                    << "Usage: Server [--port 5555] [--tun svpn0] [--plugin ./libPlugUDP.so]\n";
+            std::cerr << "Usage: Server [--port 5555] [--tun svpn0] [--plugin ./libPlugUDP.so]\n";
             return 0;
         }
     }
 
     PluginWrapper::Plugin plugin = PluginWrapper::Load(plugin_path);
-    if (!plugin.handle) return 1;
+    if (!plugin.handle)
+    {
+        return 1;
+    }
 
     int tun_fd = TunAlloc(tun);
     if (tun_fd < 0)
@@ -85,7 +92,9 @@ int main(int argc,
         if (count < 0)
         {
             if (errno == EAGAIN || errno == EWOULDBLOCK)
+            {
                 return 0;
+            }
             return -1;
         }
         return count;
