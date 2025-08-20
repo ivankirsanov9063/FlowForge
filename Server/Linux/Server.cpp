@@ -44,6 +44,13 @@ int main(int argc, char **argv)
         }
     }
 
+    if (geteuid() != 0)
+    {
+        std::cerr << "Требуются права root.\n";
+        return 1;
+    }
+
+
     PluginWrapper::Plugin plugin = PluginWrapper::Load(plugin_path);
     if (!plugin.handle)
     {
