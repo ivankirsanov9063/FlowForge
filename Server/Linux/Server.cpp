@@ -1,6 +1,7 @@
 #include "PluginWrapper.hpp"
 #include "TUN.hpp"
 #include "Network.hpp"
+#include "NetworkRollback.hpp"
 
 #include <csignal>
 #include <fcntl.h>
@@ -55,6 +56,8 @@ int main(int argc, char **argv)
         PluginWrapper::Unload(plugin);
         return 1;
     }
+
+    NetworkRollback network_rollback{};
 
     // 👉 передаём имя TUN в скрипт
     if (!NetConfig::ApplyServerSide(tun))

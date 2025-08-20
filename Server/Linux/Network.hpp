@@ -158,5 +158,7 @@ namespace NetConfig
      * @param p Параметры конфигурации (по умолчанию).
      * @return true при успехе.
      */
-    bool ApplyServerSide(const std::string &ifname, const Params &p = Params{});
+    bool ApplyServerSide(const std::string &ifname,
+                         const Params      &p = Params{},
+                         bool with_nat_fw = true);
 } // namespace NetConfig

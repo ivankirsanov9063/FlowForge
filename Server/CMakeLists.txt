@@ -1,6 +1,7 @@
 add_executable(Server
-        Server.cpp
-        Network.cpp
+        ${CMAKE_SYSTEM_NAME}/Server.cpp
+        ${CMAKE_SYSTEM_NAME}/Network.cpp
+        ${CMAKE_SYSTEM_NAME}/NetworkRollback.cpp
         ${CMAKE_SOURCE_DIR}/PluginWrapper.cpp
         ${CMAKE_SOURCE_DIR}/TUN.cpp
 )

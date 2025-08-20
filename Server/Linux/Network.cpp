@@ -357,7 +357,9 @@ namespace NetConfig
     }
 
     bool ApplyServerSide(const std::string &ifname,
-                                const Params      &p = Params{})
+                         const Params      &p,
+                         bool with_nat_fw)
+
     {
         const int ifindex = static_cast<int>(if_nametoindex(ifname.c_str()));
         if (ifindex == 0)
@@ -391,8 +393,11 @@ namespace NetConfig
 
         nl_socket_free(sk);
 
-        ok &= write_sysctl("/proc/sys/net/ipv4/ip_forward", "1");
-        ok &= write_sysctl("/proc/sys/net/ipv6/conf/all/forwarding", "1");
+        if (with_nat_fw)
+        {
+            ok &= write_sysctl("/proc/sys/net/ipv4/ip_forward", "1");
+            ok &= write_sysctl("/proc/sys/net/ipv6/conf/all/forwarding", "1");
+        }
 
         nl_sock *sk2 = nl_connect_route();
         if (!sk2) return false;
@@ -401,8 +406,11 @@ namespace NetConfig
         auto wan6 = find_default_oifname(sk2, AF_INET6);
         nl_socket_free(sk2);
 
-        if (wan4) { (void) ensure_nat44(*wan4, p.nat44_src); }
-        if (wan6) { (void) ensure_nat66(*wan6, p.nat66_src); }
+        if (with_nat_fw)
+        {
+            if (wan4) { (void) ensure_nat44(*wan4, p.nat44_src); }
+            if (wan6) { (void) ensure_nat66(*wan6, p.nat66_src); }
+        }
 
         return ok;
     }
