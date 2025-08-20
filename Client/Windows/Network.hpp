@@ -164,4 +164,24 @@ void ConfigureNetwork(WINTUN_ADAPTER_HANDLE adapter,
                       const std::string &server_ip,
                       IpVersion ver);
 
+/**
+ * @brief Параметры адресного плана интерфейса VPN.
+ *        Значения совпадают с прежними дефолтами, если не переопределять.
+ */
+struct AddressPlan
+{
+    std::string local4 = "10.8.0.2";
+    std::string peer4  = "10.8.0.1";
+    std::string local6 = "fd00:dead:beef::2";
+    std::string peer6  = "fd00:dead:beef::1";
+    unsigned long mtu  = 1400;
+};
+
+/**
+ * @brief Задать адресный план (локальные/peer-адреса и MTU).
+ *        Можно вызывать до ConfigureNetwork().
+ * @throw std::invalid_argument При некорректных адресах/MTU.
+ */
+void SetAddressPlan(const AddressPlan &plan);
+
 } // namespace Network

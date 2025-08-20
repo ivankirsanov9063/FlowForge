@@ -33,11 +33,12 @@ namespace
         return (ver == IpVersion::V6) ? "v6" : "v4";
     }
 
-    // Локальные адреса/peer — как и раньше
-    static const char *LOCAL4 = "10.8.0.2";
-    static const char *PEER4  = "10.8.0.1";
-    static const char *LOCAL6 = "fd00:dead:beef::2";
-    static const char *PEER6  = "fd00:dead:beef::1";
+    static std::string g_LOCAL4 = "10.8.0.2";
+    static std::string g_PEER4  = "10.8.0.1";
+    static std::string g_LOCAL6 = "fd00:dead:beef::2";
+    static std::string g_PEER6  = "fd00:dead:beef::1";
+    static ULONG g_mtu = 1400;
+
 }
 
 // ---------------- low-level generic ----------------
@@ -562,17 +563,17 @@ void ConfigureNetwork(WINTUN_ADAPTER_HANDLE adapter,
                 << " server=" << server_ip;
 
     // MTU + адрес + метрика
-    set_if_mtu(luid, 1400, ver);
+    set_if_mtu(luid, g_mtu, ver);
     if (ver == IpVersion::V6)
     {
         // IPv6: присваиваем адрес как /64 (или /127 для p2p), а не /128
-        add_ip_address_on_if(luid, LOCAL6, 64, IpVersion::V6);
+        add_ip_address_on_if(luid, g_LOCAL6.c_str(), 64, IpVersion::V6);
         set_if_metric(luid, 1, IpVersion::V6);
     }
     else
     {
         // IPv4: присваиваем адрес как /30 (point-to-point), а не /32
-        add_ip_address_on_if(luid, LOCAL4, 30, IpVersion::V4);
+        add_ip_address_on_if(luid, g_LOCAL4.c_str(), 30, IpVersion::V4);
         set_if_metric(luid, 1, IpVersion::V4);
     }
 
@@ -611,18 +612,63 @@ void ConfigureNetwork(WINTUN_ADAPTER_HANDLE adapter,
     {
         if (ver == IpVersion::V6)
         {
-            add_route_via_gateway(luid, "::",      1, PEER6, 1, IpVersion::V6);
-            add_route_via_gateway(luid, "8000::",  1, PEER6, 1, IpVersion::V6);
+            add_route_via_gateway(luid, "::",      1, g_PEER6.c_str(), 1, IpVersion::V6);
+            add_route_via_gateway(luid, "8000::",  1, g_PEER6.c_str(), 1, IpVersion::V6);
         }
         else
         {
-            add_route_via_gateway(luid, "0.0.0.0",   1, PEER4, 1, IpVersion::V4);
-            add_route_via_gateway(luid, "128.0.0.0", 1, PEER4, 1, IpVersion::V4);
+
+            add_route_via_gateway(luid, "0.0.0.0",   1, g_PEER4.c_str(), 1, IpVersion::V4);
+            add_route_via_gateway(luid, "128.0.0.0", 1, g_PEER4.c_str(), 1, IpVersion::V4);
         }
         LOGI("tun") << "Defaults activated via VPN gateway (" << family_tag(ver) << ")";
     }
 
     LOGI("tun") << "ConfigureNetwork: done family=" << family_tag(ver);
+}
+
+    // ===== runtime overrides =====
+void SetAddressPlan(const AddressPlan &plan)
+{
+    // валидация и установка; пустые строки — игнорируем
+    if (!plan.local4.empty())
+        {
+                IN_ADDR tmp{};
+                if (!ipv4_from_string_(plan.local4.c_str(), tmp))
+                        throw std::invalid_argument("Network::SetAddressPlan: invalid local4");
+                g_LOCAL4 = plan.local4;
+            }
+    if (!plan.peer4.empty())
+        {
+                IN_ADDR tmp{};
+                if (!ipv4_from_string_(plan.peer4.c_str(), tmp))
+                        throw std::invalid_argument("Network::SetAddressPlan: invalid peer4");
+                g_PEER4 = plan.peer4;
+            }
+    if (!plan.local6.empty())
+        {
+                IN6_ADDR tmp6{};
+                if (!ipv6_from_string_(plan.local6.c_str(), tmp6))
+                        throw std::invalid_argument("Network::SetAddressPlan: invalid local6");
+                g_LOCAL6 = plan.local6;
+            }
+    if (!plan.peer6.empty())
+        {
+                IN6_ADDR tmp6{};
+                if (!ipv6_from_string_(plan.peer6.c_str(), tmp6))
+                        throw std::invalid_argument("Network::SetAddressPlan: invalid peer6");
+                g_PEER6 = plan.peer6;
+            }
+    if (plan.mtu != 0)
+        {
+                if (plan.mtu < 576 || plan.mtu > 9000)
+                        throw std::invalid_argument("Network::SetAddressPlan: invalid MTU");
+                g_mtu = static_cast<ULONG>(plan.mtu);
+            }
+
+    LOGI("tun") << "Address plan set: v4 " << g_LOCAL4 << " <-> " << g_PEER4
+                << ", v6 " << g_LOCAL6 << " <-> " << g_PEER6
+                << ", MTU=" << g_mtu;
 }
 
 } // namespace Network

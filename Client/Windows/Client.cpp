@@ -26,6 +26,8 @@ using ssize_t = SSIZE_T;
 #include <iostream>
 #include <string>
 #include <set>
+#include <vector>
+#include <sstream>
 
 static volatile sig_atomic_t working = true;
 
@@ -225,6 +227,17 @@ int main(int argc,
     int port = 5555;
     std::string plugin_path = "PlugUDP.dll";
 
+    // Address plan defaults (можно переопределить через CLI)
+    std::string local4 = "10.8.0.2";
+    std::string peer4  = "10.8.0.1";
+    std::string local6 = "fd00:dead:beef::2";
+    std::string peer6  = "fd00:dead:beef::1";
+    int mtu = 1400;
+    // DNS по умолчанию; если указать --dns, список заменится/расширится
+    std::vector<std::string> dns_cli = {"10.8.0.1", "1.1.1.1"};
+    bool dns_overridden = false;
+
+
     LOGD("client") << "Parsing CLI arguments";
     for (int i = 1; i < argc; ++i)
     {
@@ -245,13 +258,64 @@ int main(int argc,
         {
             plugin_path = argv[++i];
         }
+        else if (a == "--local4" && i + 1 < argc)
+        {
+            local4 = argv[++i];
+        }
+        else if (a == "--peer4" && i + 1 < argc)
+        {
+            peer4 = argv[++i];
+        }
+        else if (a == "--local6" && i + 1 < argc)
+        {
+            local6 = argv[++i];
+        }
+        else if (a == "--peer6" && i + 1 < argc)
+        {
+            peer6 = argv[++i];
+        }
+        else if (a == "--mtu" && i + 1 < argc)
+        {
+            mtu = std::stoi(argv[++i]);
+        }
+        else if (a == "--dns" && i + 1 < argc)
+        {
+            std::string v = argv[++i];
+            if (!dns_overridden) { dns_cli.clear(); dns_overridden = true; }
+            // split by comma; пробелы с краёв — убрать
+            size_t start = 0;
+            while (start < v.size())
+            {
+                size_t pos = v.find(',', start);
+                std::string tok = (pos == std::string::npos) ? v.substr(start) : v.substr(start, pos - start);
+                if (!tok.empty())
+                {
+                    size_t b = tok.find_first_not_of(" \t");
+                    size_t e = tok.find_last_not_of(" \t");
+                    if (b != std::string::npos)
+                    {
+                        dns_cli.emplace_back(tok.substr(b, e - b + 1));
+                    }
+                }
+                if (pos == std::string::npos) break;
+                start = pos + 1;
+            }
+        }
         else if (a == "-h" || a == "--help")
         {
-            LOGI("client") << "Usage: Client --server <ip|ipv6> [--port 5555] [--tun cvpn0] [--plugin PlugUDP.dll]";
+            LOGI("client") << "Usage: Client --server <ip|ipv6> [--port 5555] [--tun cvpn0] "
+                              "[--plugin PlugUDP.dll] [--local4 A.B.C.D] [--peer4 A.B.C.D] "
+                              "[--local6 ::addr] [--peer6 ::addr] [--mtu 1400] [--dns ip[,ip...]]";
+
             return 0;
         }
     }
-    LOGD("client") << "Args: tun=" << tun << " server=" << server_ip << " port=" << port << " plugin=" << plugin_path;
+
+    LOGD("client") << "Args: tun=" << tun << " server=" << server_ip << " port=" << port
+                   << " plugin=" << plugin_path
+                   << " local4=" << local4 << " peer4=" << peer4
+                   << " local6=" << local6 << " peer6=" << peer6
+                   << " mtu=" << mtu;
 
     if (server_ip.empty())
     {
@@ -325,12 +389,32 @@ int main(int argc,
     Wintun.GetLuid(adapter, &luid);
     LOGD("tun") << "Adapter LUID acquired";
 
+    // Применить адресный план для Network
+    Network::AddressPlan plan;
+    plan.local4 = local4;
+    plan.peer4  = peer4;
+    plan.local6 = local6;
+    plan.peer6  = peer6;
+    plan.mtu    = static_cast<unsigned long>(mtu);
+    Network::SetAddressPlan(plan);
+
     NetworkRollback rollback(luid, server_ip); // RAII: снимок + авто-откат в деструкторе
     LOGI("networkrollback") << "Baseline snapshot captured (rollback armed)";
 
     DNS dns(luid);
-    dns.Apply({L"10.8.0.1", L"1.1.1.1"});
-    LOGI("dns") << "Applying DNS: 10.8.0.1, 1.1.1.1";
+    std::vector<std::wstring> dns_w;
+    dns_w.reserve(dns_cli.size());
+    for (const auto &s : dns_cli)
+    {
+        dns_w.emplace_back(std::wstring(s.begin(), s.end()));
+    }
+    dns.Apply(dns_w);
+    {
+        std::ostringstream oss;
+        for (size_t i = 0; i < dns_cli.size(); ++i) { if (i) oss << ", "; oss << dns_cli[i]; }
+        LOGI("dns") << "Applying DNS: " << oss.str();
+    }
+
 
     auto reapply = [&]()
     {
@@ -370,9 +454,8 @@ int main(int argc,
         }
     };
 
-    //reapply();
-    NetWatcher nw(reapply, std::chrono::milliseconds(1500));
-    LOGD("netwatcher") << "NetWatcher armed (interval=1500ms)";
+    NetWatcher nw(reapply, std::chrono::milliseconds(1000));
+    LOGD("netwatcher") << "NetWatcher armed (interval=1000ms)";
 
     WINTUN_SESSION_HANDLE sess = Wintun.Start(adapter, 0x20000);
     if (!sess)
