@@ -94,6 +94,24 @@ namespace NetConfig
         return n == need;
     }
 
+    // --- IPv4 per-interface sysctl: /proc/sys/net/ipv4/conf/<if>/<key>
+    static bool write_if_sysctl_v4(const std::string &ifname,
+                                   const char        *key,
+                                   const char        *val)
+    {
+        char path[256];
+        std::snprintf(path, sizeof(path),
+                      "/proc/sys/net/ipv4/conf/%s/%s",
+                      ifname.c_str(), key);
+
+        int fd = ::open(path, O_WRONLY | O_CLOEXEC);
+        if (fd < 0) return false;
+        const ssize_t need = static_cast<ssize_t>(std::strlen(val));
+        const ssize_t n    = ::write(fd, val, need);
+        ::close(fd);
+        return n == need;
+    }
+
     nl_sock *nl_connect_route()
     {
         nl_sock *sk = nl_socket_alloc();
@@ -363,6 +381,35 @@ namespace NetConfig
         return nft_apply(cmd);
     }
 
+    // --- MSS clamp в postrouting (идемпотентно): inet/flowforge_post
+    static bool ensure_mss_clamp(const std::optional<std::string> &wan4,
+                                 const std::optional<std::string> &wan6,
+                                 const Params                      &p)
+    {
+        std::string cmd;
+        cmd  = "add table inet flowforge_post\n";
+        cmd += "add chain inet flowforge_post postrouting { type filter hook postrouting priority mangle; policy accept; }\n";
+        cmd += "flush chain inet flowforge_post postrouting\n";
+        if (wan4 && !p.nat44_src.empty())
+        {
+            cmd += "add rule inet flowforge_post postrouting "
+                   "ip saddr " + p.nat44_src + " "
+                   "oifname \"" + *wan4 + "\" "
+                   "tcp flags syn tcp option maxseg size set clamp to pmtu "
+                   "comment \"flowforge:mss\"\n";
+        }
+        if (wan6 && !p.nat66_src.empty())
+        {
+            cmd += "add rule inet flowforge_post postrouting "
+                   "ip6 saddr " + p.nat66_src + " "
+                   "oifname \"" + *wan6 + "\" "
+                   "tcp flags syn tcp option maxseg size set clamp to pmtu "
+                   "comment \"flowforge:mss6\"\n";
+        }
+        return nft_apply(cmd);
+    }
+
+
     bool ApplyServerSide(const std::string &ifname,
                          const Params      &p,
                          bool with_nat_fw)
@@ -415,9 +462,24 @@ namespace NetConfig
 
         if (with_nat_fw)
         {
+            // rp_filter=0 на WAN (асимметрия/NAT), запрет redirect'ов (в т.ч. для default)
+            if (wan4)
+            {
+                (void) write_if_sysctl_v4(*wan4, "rp_filter", "0");
+                (void) write_sysctl("/proc/sys/net/ipv4/conf/all/accept_redirects",     "0");
+                (void) write_sysctl("/proc/sys/net/ipv4/conf/default/accept_redirects", "0");
+                (void) write_sysctl("/proc/sys/net/ipv4/conf/all/send_redirects",       "0");
+                (void) write_sysctl("/proc/sys/net/ipv4/conf/default/send_redirects",   "0");
+            }
+
+            // NAT (идемпотентно в своих таблицах)
             if (wan4) { (void) ensure_nat44(*wan4, p.nat44_src); }
             if (wan6) { (void) ensure_nat66(*wan6, p.nat66_src); }
+
+            // TCP MSS clamp to PMTU (идемпотентно)
+            (void) ensure_mss_clamp(wan4, wan6, p);
         }
+
 
         return ok;
     }
