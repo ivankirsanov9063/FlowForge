@@ -336,11 +336,14 @@ namespace NetConfig
                              const std::string &src_cidr)
     {
         std::string cmd;
-        cmd  = "add table ip nat\n";
-        cmd += "add chain ip nat POSTROUTING { type nat hook postrouting priority 100 ; }\n";
-        cmd += "add rule ip nat POSTROUTING oifname \"" +
-               oifname + "\" ip saddr " + src_cidr +
-               " counter masquerade\n";
+        cmd  = "add table ip flowforge_nat\n";
+        cmd += "add chain ip flowforge_nat postrouting { type nat hook postrouting priority 100 ; policy accept; }\n";
+        cmd += "flush chain ip flowforge_nat postrouting\n";
+        cmd += "add rule ip flowforge_nat postrouting "
+                "ip saddr " + src_cidr + " "
+                "oifname \"" + oifname + "\" "
+                "counter masquerade "
+                "comment \"flowforge:auto\"\n";
         return nft_apply(cmd);
     }
 
@@ -348,11 +351,15 @@ namespace NetConfig
                              const std::string &src_cidr)
     {
         std::string cmd;
-        cmd  = "add table ip6 nat\n";
-        cmd += "add chain ip6 nat POSTROUTING { type nat hook postrouting priority 100 ; }\n";
-        cmd += "add rule ip6 nat POSTROUTING oifname \"" +
-               oifname + "\" ip6 saddr " + src_cidr +
-               " counter masquerade\n";
+        cmd  = "add table ip6 flowforge_nat\n";
+        cmd += "add chain ip6 flowforge_nat postrouting { type nat hook postrouting priority 100 ; policy accept; }\n";
+        cmd += "flush chain ip6 flowforge_nat postrouting\n";
+        cmd += "add rule ip6 flowforge_nat postrouting "
+                "ip6 saddr " + src_cidr + " "
+                "oifname \"" + oifname + "\" "
+                "counter masquerade "
+                "comment \"flowforge:auto\"\n";
+
         return nft_apply(cmd);
     }
 
