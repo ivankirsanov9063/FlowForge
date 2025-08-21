@@ -10,6 +10,8 @@
 #include <cerrno>
 #include <fstream>
 #include <sstream>
+#include <stdexcept>
+#include <algorithm>
 
 #include <unistd.h>
 #include <fcntl.h>
@@ -334,10 +336,21 @@ namespace NetConfig
             if (err)
             {
                 std::string e = err;
-                for (auto &c : e) c = std::tolower(c);
-                if (e.find("exist")   != std::string::npos ||
-                    e.find("already") != std::string::npos)
-                    benign = true;
+                std::transform(e.begin(), e.end(), e.begin(),
+                               [](unsigned char c){ return static_cast<char>(std::tolower(c)); });
+                // 1) idempotency: "exists"/"already"
+                if (e.find("exist") != std::string::npos || e.find("already") != std::string::npos)
+                        benign = true;
+                // 2) best-effort для удалений/flush: "no such file or directory"
+                if (!benign && e.find("no such file or directory") != std::string::npos)
+                {
+                    std::string cmd_lower = commands;
+                    std::transform(cmd_lower.begin(), cmd_lower.end(), cmd_lower.begin(),
+                                   [](unsigned char c){ return static_cast<char>(std::tolower(c)); });
+                    if (cmd_lower.find("delete ") != std::string::npos ||
+                        cmd_lower.find("flush chain") != std::string::npos)
+                        benign = true;
+                }
             }
             nft_ctx_free(ctx);
             return benign;
@@ -454,31 +467,52 @@ namespace NetConfig
                                  const std::optional<std::string> &wan6,
                                  const Params                      &p)
     {
-        std::string cmd;
-        cmd  = "add table inet flowforge_post\n";
-        cmd += "add chain inet flowforge_post postrouting { type filter hook postrouting priority mangle; policy accept; }\n";
-        cmd += "flush chain inet flowforge_post postrouting\n";
+        // 1) гарантируем table/chain (priority — числом, для широкой совместимости)
+        std::string mk;
+        mk  = "add table inet flowforge_post\n";
+        mk += "add chain inet flowforge_post postrouting "
+              "{ type filter hook postrouting priority -150; policy accept; }\n";
+        if (!nft_apply(mk)) {
+            // fallback: удалить таблицу и создать заново
+            (void) nft_apply("delete table inet flowforge_post\n");
+            if (!nft_apply(mk)) return false;
+        }
+        // 2) очищаем цепочку
+        if (!nft_apply("flush chain inet flowforge_post postrouting\n")) {
+            // fallback: удалить целиком и пересоздать
+            (void) nft_apply("delete table inet flowforge_post\n");
+            if (!nft_apply(mk)) return false;
+        }
+        // 3) добавляем правила
+        std::string rules;
         if (wan4 && !p.nat44_src.empty())
         {
-            cmd += "add rule inet flowforge_post postrouting "
-                   "ip saddr " + p.nat44_src + " "
-                   "oifname \"" + *wan4 + "\" "
-                   "tcp flags syn tcp option maxseg size set clamp to pmtu "
-                   "comment \"flowforge:mss\"\n";
+            rules += "add rule inet flowforge_post postrouting "
+                     "ip saddr " + p.nat44_src + " "
+                     "oifname \"" + *wan4 + "\" "
+                     "tcp flags syn tcp option maxseg size set clamp to pmtu "
+                     "comment \"flowforge:mss\"\n";
         }
         if (wan6 && !p.nat66_src.empty())
         {
-            cmd += "add rule inet flowforge_post postrouting "
-                   "ip6 saddr " + p.nat66_src + " "
-                   "oifname \"" + *wan6 + "\" "
-                   "tcp flags syn tcp option maxseg size set clamp to pmtu "
-                   "comment \"flowforge:mss6\"\n";
+            rules += "add rule inet flowforge_post postrouting "
+                     "ip6 saddr " + p.nat66_src + " "
+                     "oifname \"" + *wan6 + "\" "
+                     "tcp flags syn tcp option maxseg size set clamp to pmtu "
+                     "comment \"flowforge:mss6\"\n";
         }
-        return nft_apply(cmd);
+        if (!rules.empty() && !nft_apply(rules))
+        {
+            // ещё одна попытка «с чистого листа»
+            (void) nft_apply("delete table inet flowforge_post\n");
+            if (!nft_apply(mk)) return false;
+            if (!nft_apply(rules)) return false;
+        }
+        return true;
     }
 
 
-    bool ApplyServerSide(const std::string &ifname,
+    void ApplyServerSide(const std::string &ifname,
                          const Params      &p,
                          bool with_nat_fw)
 
@@ -486,42 +520,73 @@ namespace NetConfig
         const int ifindex = static_cast<int>(if_nametoindex(ifname.c_str()));
         if (ifindex == 0)
         {
-            std::cerr << "if_nametoindex failed for " << ifname << "\n";
-            return false;
+            throw std::runtime_error("if_nametoindex failed for " + ifname);
         }
 
         nl_sock *sk = nl_connect_route();
         if (!sk)
         {
-            std::cerr << "nl_connect NETLINK_ROUTE failed\n";
-            return false;
+            throw std::runtime_error("nl_connect NETLINK_ROUTE failed");
         }
 
-        bool ok = true;
-        ok &= link_set_up_and_mtu(sk, ifindex, p.mtu);
+        if (!link_set_up_and_mtu(sk, ifindex, p.mtu))
+        {
+            nl_socket_free(sk);
+            throw std::runtime_error("link_set_up_and_mtu failed for " + ifname);
+        }
+        
+        if (!write_if_sysctl(ifname, "accept_ra", "0"))
+        {
+            nl_socket_free(sk);
+            throw std::runtime_error("sysctl net.ipv6.conf." + ifname + ".accept_ra=0 failed");
+        }
+        if (!write_if_sysctl(ifname, "autoconf", "0"))
+        {
+            nl_socket_free(sk);
+            throw std::runtime_error("sysctl net.ipv6.conf." + ifname + ".autoconf=0 failed");
+        }
+        if (!write_if_sysctl(ifname, "disable_ipv6", "0"))
+        {
+            nl_socket_free(sk);
+            throw std::runtime_error("sysctl net.ipv6.conf." + ifname + ".disable_ipv6=0 failed");
+        }
 
-        write_if_sysctl(ifname, "accept_ra",    "0");
-        write_if_sysctl(ifname, "autoconf",     "0");
-        write_if_sysctl(ifname, "disable_ipv6", "0");
+        if (!addr_flush_all(sk, ifindex))
+        {
+            nl_socket_free(sk);
+            throw std::runtime_error("addr_flush_all failed for " + ifname);
+        }
+        if (!addr_add_v4_local(sk, ifindex, p.v4_local.addr_be, p.v4_local.prefix))
+        {
+            nl_socket_free(sk);
+            throw std::runtime_error("addr_add_v4_local failed for " + ifname);
+        }
 
-        ok &= addr_flush_all(sk, ifindex);
-        ok &= addr_add_v4_local(sk, ifindex,
-            p.v4_local.addr_be,
-            p.v4_local.prefix);
-
-        ok &= addr_add_v6_local(sk, ifindex,
-                                p.v6_local.addr, p.v6_local.prefix);
+        if (!addr_add_v6_local(sk, ifindex, p.v6_local.addr, p.v6_local.prefix))
+        {
+            nl_socket_free(sk);
+            throw std::runtime_error("addr_add_v6_local failed for " + ifname);
+        }
 
         nl_socket_free(sk);
 
         if (with_nat_fw)
         {
-            ok &= write_sysctl("/proc/sys/net/ipv4/ip_forward", "1");
-            ok &= write_sysctl("/proc/sys/net/ipv6/conf/all/forwarding", "1");
+            if (!write_sysctl("/proc/sys/net/ipv4/ip_forward", "1"))
+            {
+                throw std::runtime_error("sysctl net.ipv4.ip_forward=1 failed");
+            }
+            if (!write_sysctl("/proc/sys/net/ipv6/conf/all/forwarding", "1"))
+            {
+                throw std::runtime_error("sysctl net.ipv6.conf.all.forwarding=1 failed");
+            }
         }
 
         nl_sock *sk2 = nl_connect_route();
-        if (!sk2) return false;
+        if (!sk2)
+        {
+            throw std::runtime_error("nl_connect NETLINK_ROUTE failed (2)");
+        }
 
         auto wan4 = find_default_oifname(sk2, AF_INET);
         auto wan6 = find_default_oifname(sk2, AF_INET6);
@@ -540,14 +605,20 @@ namespace NetConfig
             }
 
             // NAT (идемпотентно в своих таблицах)
-            if (wan4) { (void) ensure_nat44(*wan4, p.nat44_src); }
-            if (wan6) { (void) ensure_nat66(*wan6, p.nat66_src); }
+            if (wan4 && !ensure_nat44(*wan4, p.nat44_src))
+            {
+                throw std::runtime_error("ensure_nat44 failed (oif=" + *wan4 + ", src=" + p.nat44_src + ")");
+            }
+            if (wan6 && !ensure_nat66(*wan6, p.nat66_src))
+            {
+                throw std::runtime_error("ensure_nat66 failed (oif=" + *wan6 + ", src=" + p.nat66_src + ")");
+            }
 
-            // TCP MSS clamp to PMTU (идемпотентно)
-            (void) ensure_mss_clamp(wan4, wan6, p);
+            // TCP MSS clamp to PMTU (идемпотентно). На старых nft возможна неподдержка — не фатально.
+            if (!ensure_mss_clamp(wan4, wan6, p))
+            {
+                std::cerr << "WARN: ensure_mss_clamp failed (MSS clamp skipped)\n";
+            }
         }
-
-
-        return ok;
     }
 } // namespace NetConfig

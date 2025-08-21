@@ -175,12 +175,13 @@ namespace NetConfig
     bool ensure_nat66(const std::string &oifname, const std::string &src_cidr);
 
     /**
-     * @brief Применяет серверную сетевую конфигурацию.
+     * @brief Применяет серверную сетевую конфигурацию (TUN адресация, форвардинг, NAT/MSS).
      * @param ifname Имя интерфейса.
      * @param p Параметры конфигурации (по умолчанию).
-     * @return true при успехе.
+     * @param with_nat_fw Включать ли NAT/MSS/форвардинг.
+     * @throws std::runtime_error при любой критичной ошибке применения.
      */
-    bool ApplyServerSide(const std::string &ifname,
+    void ApplyServerSide(const std::string &ifname,
                          const Params      &p = Params{},
                          bool with_nat_fw = true);
 } // namespace NetConfig

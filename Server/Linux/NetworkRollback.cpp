@@ -9,6 +9,7 @@
 #include <cerrno>
 #include <cstring>
 #include <iostream>
+#include <algorithm>
 
 // Внешние зависимости
 #include <nftables/libnftables.h>
@@ -81,9 +82,13 @@ bool NetworkRollback::WriteSysctl(const std::string &dotted,
     int fd = ::open(path.c_str(), O_WRONLY | O_CLOEXEC);
     if (fd < 0)
     {
-        std::cerr << "[netrb] WriteSysctl: open failed path=" << path
-                  << " errno=" << errno << "\n";
-        return false;
+        // Если интерфейс уже исчез (ENOENT) — не шумим.
+        if (errno != ENOENT)
+        {
+            std::cerr << "[netrb] WriteSysctl: open failed path=" << path
+                      << " errno=" << errno << "\n";
+        }
+        return errno == ENOENT ? true : false;
     }
     const size_t  need = value.size();
     const ssize_t n    = ::write(fd, value.c_str(), need);
@@ -156,10 +161,23 @@ bool NetworkRollback::NftRun(const std::string &script)
     if (rc != 0)
     {
         const char *err = nft_ctx_get_error_buffer(ctx);
-        std::cerr << "[netrb] nft run failed rc=" << rc
-                  << " err=" << (err ? err : "") << "\n";
+        // Удаление несуществующих таблиц — нормальное состояние при откате.
+        std::string e = err ? std::string(err) : std::string();
+        std::string s = script;
+        std::transform(e.begin(), e.end(), e.begin(),
+                       [](unsigned char c){ return static_cast<char>(std::tolower(c)); });
+        std::transform(s.begin(), s.end(), s.begin(),
+                       [](unsigned char c){ return static_cast<char>(std::tolower(c)); });
+        const bool benign_delete =
+            (s.find("delete ") != std::string::npos) &&
+            (e.find("no such file or directory") != std::string::npos);
+        if (!benign_delete)
+        {
+            std::cerr << "[netrb] nft run failed rc=" << rc
+                      << " err=" << (err ? err : "") << "\n";
+        }
         nft_ctx_free(ctx);
-        return false;
+        return benign_delete;
     }
     nft_ctx_free(ctx);
     return true;

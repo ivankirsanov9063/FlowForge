@@ -124,13 +124,18 @@ int main(int argc, char **argv)
     p.nat66_src = !nat66_src.empty() ? nat66_src : NetConfig::to_network_cidr(p.v6_local);
 
     // 👉 применяем сетевую конфигурацию
-    if (!NetConfig::ApplyServerSide(tun, p, with_nat_fw))
+    try
     {
-        std::cerr << "Network setup failed\n";
+        NetConfig::ApplyServerSide(tun, p, with_nat_fw);
+    }
+    catch (const std::exception &e)
+    {
+        std::cerr << "Network setup failed: " << e.what() << "\n";
         close(tun_fd);
         PluginWrapper::Unload(plugin);
         return 1;
     }
+
 
     // 👉 Включаем вотчер за default route: при смене WAN пересоберёт NAT/MSS
     //    (используются дефолтные Params; при необходимости передай свои)
