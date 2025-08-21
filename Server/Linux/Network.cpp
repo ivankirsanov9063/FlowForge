@@ -32,7 +32,7 @@
 namespace NetConfig
 {
     bool write_sysctl(const char *path,
-                             const char *val)
+                      const char *val)
     {
         int fd = ::open(path, O_WRONLY | O_CLOEXEC);
         if (fd < 0) return false;
@@ -45,8 +45,8 @@ namespace NetConfig
     }
 
     bool write_if_sysctl(const std::string &ifname,
-                                const char        *key,
-                                const char        *val)
+                         const char        *key,
+                         const char        *val)
     {
         char path[256];
         std::snprintf(path, sizeof(path),
@@ -95,8 +95,8 @@ namespace NetConfig
     }
 
     bool link_set_up_and_mtu(nl_sock *sk,
-                                    int      ifindex,
-                                    int      mtu)
+                             int      ifindex,
+                             int      mtu)
     {
         rtnl_link *link = rtnl_link_alloc();
         if (!link) return false;
@@ -139,7 +139,7 @@ namespace NetConfig
     }
 
     bool addr_flush_all(nl_sock *sk,
-                               int      ifindex)
+                        int      ifindex)
     {
         nl_cache *cache = nullptr;
         if (rtnl_addr_alloc_cache(sk, &cache) < 0) return false;
@@ -170,10 +170,10 @@ namespace NetConfig
     }
 
     bool addr_add_v4_p2p(nl_sock    *sk,
-                                int         ifindex,
-                                std::uint32_t local_be,
-                                std::uint32_t peer_be,
-                                std::uint8_t  prefix)
+                         int         ifindex,
+                         std::uint32_t local_be,
+                         std::uint32_t peer_be,
+                         std::uint8_t  prefix)
     {
         rtnl_addr *a = rtnl_addr_alloc();
         if (!a) return false;
@@ -203,9 +203,9 @@ namespace NetConfig
     }
 
     bool addr_add_v6_local(nl_sock                              *sk,
-                                  int                                   ifindex,
-                                  const std::array<std::uint8_t, 16>  &local,
-                                  std::uint8_t                         prefix)
+                           int                                   ifindex,
+                           const std::array<std::uint8_t, 16>  &local,
+                           std::uint8_t                         prefix)
     {
         rtnl_addr *a = rtnl_addr_alloc();
         if (!a) return false;
@@ -230,8 +230,8 @@ namespace NetConfig
     }
 
     bool route_add_onlink_host_v6(nl_sock                             *sk,
-                                         int                                  ifindex,
-                                         const std::array<std::uint8_t, 16> &dst128)
+                                  int                                  ifindex,
+                                  const std::array<std::uint8_t, 16> &dst128)
     {
         rtnl_route *r = rtnl_route_alloc();
         if (!r) return false;
@@ -266,7 +266,7 @@ namespace NetConfig
     }
 
     std::optional<std::string> find_default_oifname(nl_sock *sk,
-                                                           int      family)
+                                                    int      family)
     {
         nl_cache *rcache = nullptr;
         nl_cache *lcache = nullptr;
@@ -332,7 +332,6 @@ namespace NetConfig
         if (rc != 0)
         {
             // Запасной путь: пробуем создать/удалить временную таблицу
-            // (некоторые версии корректнее реагируют на add/delete)
             (void) nft_run_cmd_from_buffer(ctx, "add table inet flowforge_probe");
             rc = nft_run_cmd_from_buffer(ctx, "delete table inet flowforge_probe");
         }
@@ -374,6 +373,10 @@ namespace NetConfig
                         benign = true;
                 }
             }
+            if (!benign) {
+                std::cerr << "[nft] ERROR: " << (err ? err : "(no error text)") << "\n";
+                std::cerr << "[nft] COMMANDS:\n" << commands << "\n";
+            }
             nft_ctx_free(ctx);
             return benign;
         }
@@ -382,94 +385,181 @@ namespace NetConfig
     }
 
     bool ensure_nat44(const std::string &oifname,
-                             const std::string &src_cidr)
+                      const std::string &src_cidr)
     {
         std::string cmd;
         cmd  = "add table ip flowforge_nat\n";
         cmd += "add chain ip flowforge_nat postrouting { type nat hook postrouting priority 100 ; policy accept; }\n";
         cmd += "flush chain ip flowforge_nat postrouting\n";
         cmd += "add rule ip flowforge_nat postrouting "
-                "ip saddr " + src_cidr + " "
-                "oifname \"" + oifname + "\" "
-                "counter masquerade "
-                "comment \"flowforge:auto\"\n";
+               "ip saddr " + src_cidr + " "
+               "oifname \"" + oifname + "\" "
+               "counter masquerade "
+               "comment \"flowforge:auto\"\n";
         return nft_apply(cmd);
     }
 
     bool ensure_nat66(const std::string &oifname,
-                             const std::string &src_cidr)
+                      const std::string &src_cidr)
     {
         std::string cmd;
         cmd  = "add table ip6 flowforge_nat\n";
         cmd += "add chain ip6 flowforge_nat postrouting { type nat hook postrouting priority 100 ; policy accept; }\n";
         cmd += "flush chain ip6 flowforge_nat postrouting\n";
         cmd += "add rule ip6 flowforge_nat postrouting "
-                "ip6 saddr " + src_cidr + " "
-                "oifname \"" + oifname + "\" "
-                "counter masquerade "
-                "comment \"flowforge:auto\"\n";
+               "ip6 saddr " + src_cidr + " "
+               "oifname \"" + oifname + "\" "
+               "counter masquerade "
+               "comment \"flowforge:auto\"\n";
 
         return nft_apply(cmd);
+    }
+
+    // --- MSS clamp в postrouting (идемпотентно): inet/flowforge_post
+    static bool ensure_mss_clamp(const std::optional<std::string> &wan4,
+                                 const std::optional<std::string> &wan6,
+                                 const Params                      &p)
+    {
+        auto run = [](const std::string &cmd)->bool {
+            if (!nft_apply(cmd)) { std::cerr << "[mss] failed cmd: " << cmd; return false; }
+            return true;
+        };
+
+        // 1) таблица и цепочка — РАЗДЕЛЬНО (чтобы "exist" не обрывал весь буфер)
+        if (!run("add table inet flowforge_post\n")) {
+            (void) nft_apply("delete table inet flowforge_post\n");
+            if (!run("add table inet flowforge_post\n")) return false;
+        }
+        if (!run("add chain inet flowforge_post postrouting { type filter hook postrouting priority -150; policy accept; }\n")) {
+            (void) nft_apply("delete table inet flowforge_post\n");
+            if (!run("add table inet flowforge_post\n")) return false;
+            if (!run("add chain inet flowforge_post postrouting { type filter hook postrouting priority -150; policy accept; }\n")) return false;
+        }
+
+        // 2) очищаем рабочую цепочку
+        if (!run("flush chain inet flowforge_post postrouting\n")) {
+            (void) nft_apply("delete table inet flowforge_post\n");
+            if (!run("add table inet flowforge_post\n")) return false;
+            if (!run("add chain inet flowforge_post postrouting { type filter hook postrouting priority -150; policy accept; }\n")) return false;
+        }
+
+        // 3) правила
+        std::string rules;
+        if (wan4 && !p.nat44_src.empty())
+        {
+            rules += "add rule inet flowforge_post postrouting "
+                     "ip saddr " + p.nat44_src + " "
+                     "oifname \"" + *wan4 + "\" "
+                     "tcp flags syn tcp option maxseg size set rt mtu "
+                     "comment \"flowforge:mss\"\n";
+        }
+        if (wan6 && !p.nat66_src.empty())
+        {
+            rules += "add rule inet flowforge_post postrouting "
+                     "ip6 saddr " + p.nat66_src + " "
+                     "oifname \"" + *wan6 + "\" "
+                     "tcp flags syn tcp option maxseg size set rt mtu "
+                     "comment \"flowforge:mss6\"\n";
+        }
+        return rules.empty() ? true : nft_apply(rules);
     }
 
     // ---- Политики файрвола для TUN ----------------------------------------------------------
     bool ensure_fw_tun(const std::string &ifname, const Params &p)
     {
-        // 1) Таблица/цепочки + jump из hook-цепочек только для нашего TUN
-        std::string mk;
-        mk  = "add table inet flowforge_fw\n";
-        mk += "add chain inet flowforge_fw input  { type filter hook input  priority 0; policy accept; }\n";
-        mk += "add chain inet flowforge_fw forward{ type filter hook forward priority 0; policy accept; }\n";
-        mk += "add chain inet flowforge_fw tun_in { policy drop; }\n";
-        mk += "add chain inet flowforge_fw tun_fwd{ policy accept; }\n";
-        if (!nft_apply(mk)) {
-            (void) nft_apply("delete table inet flowforge_fw\n");
-            if (!nft_apply(mk)) return false;
-        }
-        // привязка к нашему интерфейсу
-        std::string jump;
-        jump  = "add rule inet flowforge_fw input  iifname \"" + ifname + "\" jump tun_in\n";
-        jump += "add rule inet flowforge_fw forward iifname \"" + ifname + "\" jump tun_fwd\n";
-        (void) nft_apply(jump); // идемпотентно
+        auto run = [](const std::string &cmd)->bool {
+            if (!nft_apply(cmd)) { std::cerr << "[fw] failed cmd: " << cmd; return false; }
+            return true;
+        };
 
-        // 2) Чистим рабочие цепочки
-        if (!nft_apply("flush chain inet flowforge_fw tun_in\n")) {
+        // 1) Таблица — отдельно
+        if (!run("add table inet flowforge_fw\n")) {
             (void) nft_apply("delete table inet flowforge_fw\n");
-            if (!nft_apply(mk)) return false;
-            (void) nft_apply(jump);
+            if (!run("add table inet flowforge_fw\n")) return false;
         }
-        if (!nft_apply("flush chain inet flowforge_fw tun_fwd\n")) {
+        // 2) Hook-цепочки — отдельно (фикс синтаксиса: 'forward { ... }' с пробелом)
+        if (!run("add chain inet flowforge_fw input { type filter hook input priority 0; policy accept; }\n")) {
             (void) nft_apply("delete table inet flowforge_fw\n");
-            if (!nft_apply(mk)) return false;
-            (void) nft_apply(jump);
+            if (!run("add table inet flowforge_fw\n")) return false;
+            if (!run("add chain inet flowforge_fw input { type filter hook input priority 0; policy accept; }\n")) return false;
+        }
+        if (!run("add chain inet flowforge_fw forward { type filter hook forward priority 0; policy accept; }\n")) {
+            (void) nft_apply("delete table inet flowforge_fw\n");
+            if (!run("add table inet flowforge_fw\n")) return false;
+            if (!run("add chain inet flowforge_fw input { type filter hook input priority 0; policy accept; }\n")) return false;
+            if (!run("add chain inet flowforge_fw forward { type filter hook forward priority 0; policy accept; }\n")) return false;
+        }
+        // 3) Рабочие (не hook) цепочки без policy (policy допустим только в hook-цепях)
+        (void) nft_apply("add chain inet flowforge_fw tun_in\n");
+        (void) nft_apply("add chain inet flowforge_fw tun_fwd\n");
+        // 4) Привязка к нашему интерфейсу (идемпотентно)
+        (void) nft_apply("add rule inet flowforge_fw input  iifname \"" + ifname + "\" jump tun_in\n");
+        (void) nft_apply("add rule inet flowforge_fw forward iifname \"" + ifname + "\" jump tun_fwd\n");
+
+        // 5) Чистим рабочие цепочки (с перезапуском «с нуля» при сбое flush)
+        if (!run("flush chain inet flowforge_fw tun_in\n")) {
+            (void) nft_apply("delete table inet flowforge_fw\n");
+            if (!run("add table inet flowforge_fw\n")) return false;
+            if (!run("add chain inet flowforge_fw input { type filter hook input priority 0; policy accept; }\n")) return false;
+            if (!run("add chain inet flowforge_fw forward { type filter hook forward priority 0; policy accept; }\n")) return false;
+            if (!run("add chain inet flowforge_fw tun_in\n")) return false;
+            if (!run("add chain inet flowforge_fw tun_fwd\n")) return false;
+            (void) nft_apply("add rule inet flowforge_fw input  iifname \"" + ifname + "\" jump tun_in\n");
+            (void) nft_apply("add rule inet flowforge_fw forward iifname \"" + ifname + "\" jump tun_fwd\n");
+        }
+        if (!run("flush chain inet flowforge_fw tun_fwd\n")) {
+            (void) nft_apply("delete table inet flowforge_fw\n");
+            if (!run("add table inet flowforge_fw\n")) return false;
+            if (!run("add chain inet flowforge_fw input { type filter hook input priority 0; policy accept; }\n")) return false;
+            if (!run("add chain inet flowforge_fw forward { type filter hook forward priority 0; policy accept; }\n")) return false;
+            if (!run("add chain inet flowforge_fw tun_in\n")) return false;
+            if (!run("add chain inet flowforge_fw tun_fwd\n")) return false;
+            (void) nft_apply("add rule inet flowforge_fw input  iifname \"" + ifname + "\" jump tun_in\n");
+            (void) nft_apply("add rule inet flowforge_fw forward iifname \"" + ifname + "\" jump tun_fwd\n");
         }
 
         const std::string net4 = to_network_cidr(p.v4_local);
         const std::string net6 = to_network_cidr(p.v6_local);
 
-        // 3) Правила tun_in (INPUT на TUN): default drop, разрешаем только нужное
-        std::string in_rules;
-        in_rules += "add rule inet flowforge_fw tun_in ct state invalid drop\n";
-        in_rules += "add rule inet flowforge_fw tun_in ct state established,related accept\n";
+        // 6) Правила tun_in (INPUT на TUN): default drop, разрешаем только нужное
+        if (!run("add rule inet flowforge_fw tun_in ct state invalid drop\n")) return false;
+        if (!run("add rule inet flowforge_fw tun_in ct state established,related accept\n")) return false;
         if (p.v4_local.prefix > 0)
-            in_rules += "add rule inet flowforge_fw tun_in ip  saddr != " + net4 + " drop\n";
+        {
+            std::string r = "add rule inet flowforge_fw tun_in ip saddr != " + net4 + " drop\n";
+            if (!run(r)) return false;
+        }
         if (p.v6_local.prefix > 0)
-            in_rules += "add rule inet flowforge_fw tun_in ip6 saddr != " + net6 + " drop\n";
-        // Разрешаем минимально необходимые ICMP* c лимитом
-        in_rules += "add rule inet flowforge_fw tun_in ip protocol icmp icmp type { echo-request, destination-unreachable, time-exceeded, parameter-problem } limit rate 10/second accept\n";
-        in_rules += "add rule inet flowforge_fw tun_in icmpv6 type { echo-request, packet-too-big, time-exceeded, parameter-problem, destination-unreachable } limit rate 10/second accept\n";
-        if (!nft_apply(in_rules)) return false;
+        {
+            std::string r = "add rule inet flowforge_fw tun_in ip6 saddr != " + net6 + " drop\n";
+            if (!run(r)) return false;
+        }
+        // ICMP/ICMPv6 — best-effort (мета-протоколы для inet-семейства)
+        (void) nft_apply(
+            "add rule inet flowforge_fw tun_in meta l4proto icmp "
+            "icmp type { echo-request, destination-unreachable, time-exceeded, parameter-problem } "
+            "limit rate 10/second accept\n");
+        (void) nft_apply(
+            "add rule inet flowforge_fw tun_in meta l4proto icmpv6 "
+            "icmpv6 type { echo-request, packet-too-big, time-exceeded, parameter-problem, destination-unreachable } "
+            "limit rate 10/second accept\n");
+        // default-drop для входящего трафика с TUN
+        if (!run("add rule inet flowforge_fw tun_in counter drop\n")) return false;
 
-        // 4) Правила tun_fwd (FORWARD из TUN): антиспуфинг + состояние
-        std::string fwd_rules;
-        fwd_rules += "add rule inet flowforge_fw tun_fwd ct state invalid drop\n";
+        // 7) Правила tun_fwd (FORWARD из TUN): антиспуфинг + состояние
+        if (!run("add rule inet flowforge_fw tun_fwd ct state invalid drop\n")) return false;
         if (p.v4_local.prefix > 0)
-            fwd_rules += "add rule inet flowforge_fw tun_fwd ip  saddr != " + net4 + " drop\n";
+        {
+            std::string r = "add rule inet flowforge_fw tun_fwd ip saddr != " + net4 + " drop\n";
+            if (!run(r)) return false;
+        }
         if (p.v6_local.prefix > 0)
-            fwd_rules += "add rule inet flowforge_fw tun_fwd ip6 saddr != " + net6 + " drop\n";
-        fwd_rules += "add rule inet flowforge_fw tun_fwd ct state established,related accept\n";
-        fwd_rules += "add rule inet flowforge_fw tun_fwd accept\n";
-        if (!nft_apply(fwd_rules)) return false;
+        {
+            std::string r = "add rule inet flowforge_fw tun_fwd ip6 saddr != " + net6 + " drop\n";
+            if (!run(r)) return false;
+        }
+        if (!run("add rule inet flowforge_fw tun_fwd ct state established,related accept\n")) return false;
+        if (!run("add rule inet flowforge_fw tun_fwd accept\n")) return false;
 
         return true;
     }
@@ -546,56 +636,6 @@ namespace NetConfig
         return oss.str();
     }
 
-    // --- MSS clamp в postrouting (идемпотентно): inet/flowforge_post
-    static bool ensure_mss_clamp(const std::optional<std::string> &wan4,
-                                 const std::optional<std::string> &wan6,
-                                 const Params                      &p)
-    {
-        // 1) гарантируем table/chain (priority — числом, для широкой совместимости)
-        std::string mk;
-        mk  = "add table inet flowforge_post\n";
-        mk += "add chain inet flowforge_post postrouting "
-              "{ type filter hook postrouting priority -150; policy accept; }\n";
-        if (!nft_apply(mk)) {
-            // fallback: удалить таблицу и создать заново
-            (void) nft_apply("delete table inet flowforge_post\n");
-            if (!nft_apply(mk)) return false;
-        }
-        // 2) очищаем цепочку
-        if (!nft_apply("flush chain inet flowforge_post postrouting\n")) {
-            // fallback: удалить целиком и пересоздать
-            (void) nft_apply("delete table inet flowforge_post\n");
-            if (!nft_apply(mk)) return false;
-        }
-        // 3) добавляем правила
-        std::string rules;
-        if (wan4 && !p.nat44_src.empty())
-        {
-            rules += "add rule inet flowforge_post postrouting "
-                     "ip saddr " + p.nat44_src + " "
-                     "oifname \"" + *wan4 + "\" "
-                     "tcp flags syn tcp option maxseg size set clamp to pmtu "
-                     "comment \"flowforge:mss\"\n";
-        }
-        if (wan6 && !p.nat66_src.empty())
-        {
-            rules += "add rule inet flowforge_post postrouting "
-                     "ip6 saddr " + p.nat66_src + " "
-                     "oifname \"" + *wan6 + "\" "
-                     "tcp flags syn tcp option maxseg size set clamp to pmtu "
-                     "comment \"flowforge:mss6\"\n";
-        }
-        if (!rules.empty() && !nft_apply(rules))
-        {
-            // ещё одна попытка «с чистого листа»
-            (void) nft_apply("delete table inet flowforge_post\n");
-            if (!nft_apply(mk)) return false;
-            if (!nft_apply(rules)) return false;
-        }
-        return true;
-    }
-
-
     void ApplyServerSide(const std::string &ifname,
                          const Params      &p,
                          bool with_nat_fw)
@@ -618,7 +658,7 @@ namespace NetConfig
             nl_socket_free(sk);
             throw std::runtime_error("link_set_up_and_mtu failed for " + ifname);
         }
-        
+
         if (!write_if_sysctl(ifname, "accept_ra", "0"))
         {
             nl_socket_free(sk);
@@ -681,7 +721,7 @@ namespace NetConfig
             if (!write_sysctl("/proc/sys/net/ipv4/conf/default/send_redirects", "0"))
                 std::cerr << "WARN: sysctl net.ipv4.conf.default.send_redirects=0 failed\n";
 
-            // IPv6: запретить ICMPv6 redirects (глобально и по умолчанию)
+            // IPv6: запретить ICMPв6 redirects (глобально и по умолчанию)
             if (!write_sysctl("/proc/sys/net/ipv6/conf/all/accept_redirects", "0"))
                 std::cerr << "WARN: sysctl net.ipv6.conf.all.accept_redirects=0 failed\n";
             if (!write_sysctl("/proc/sys/net/ipv6/conf/default/accept_redirects", "0"))
@@ -692,7 +732,7 @@ namespace NetConfig
                 std::cerr << "WARN: sysctl net.ipv4.conf.all.accept_local=1 failed\n";
             if (!write_sysctl("/proc/sys/net/ipv4/conf/default/accept_local", "1"))
                 std::cerr << "WARN: sysctl net.ipv4.conf.default.accept_local=1 failed\n";
-            
+
             if (!write_sysctl("/proc/sys/net/ipv4/ip_forward", "1"))
             {
                 throw std::runtime_error("sysctl net.ipv4.ip_forward=1 failed");

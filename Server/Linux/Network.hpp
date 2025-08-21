@@ -163,22 +163,6 @@ namespace NetConfig
     bool nft_feature_probe();
 
     /**
-     * @brief Задать политики файрвола для TUN-интерфейса.
-     *
-     * Создаёт таблицу inet flowforge_fw с цепочками:
-     *  - input  (hook input): для iifname==ifname → jump tun_in (policy drop),
-     *    где: ct state invalid drop; ct established,related accept;
-     *         anti-spoof (ip/ip6 saddr в пуле); лимитируем ICMP/ICMPv6.
-     *  - forward (hook forward): для iifname==ifname → jump tun_fwd,
-     *    где: anti-spoof; ct invalid drop; ct established,related accept; accept.
-     *
-     * Идемпотентно: повторные вызовы безопасны.
-     *
-     * @throws ничего (возвращает false при ошибке).
-     */
-    bool ensure_fw_tun(const std::string &ifname, const Params &p);
-
-    /**
      * @brief Применяет команды nftables.
      * @param commands Команды в виде строки.
      * @return true при успехе или если ошибка не критична.

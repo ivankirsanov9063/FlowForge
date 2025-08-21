@@ -176,33 +176,51 @@ void NetWatcher::ApplyNatAndMss_(const std::optional<std::string> &wan4,
             (void) NetConfig::nft_apply("delete table inet flowforge_post\n");
             (void) NetConfig::nft_apply(mk);
         }
-        // Шаг 3: добавляем правила
-        std::string rules;
+        // Шаг 3: добавляем правила (сначала современный синтаксис, затем фоллбэк)
+        std::string rules_rt;
         if (wan4 && !p.nat44_src.empty())
         {
-            rules += "add rule inet flowforge_post postrouting "
-                     "ip saddr " + p.nat44_src + " "
-                     "oifname \"" + *wan4 + "\" "
-                     "tcp flags syn tcp option maxseg size set clamp to pmtu "
-                     "comment \"flowforge:mss\"\n";
+            rules_rt += "add rule inet flowforge_post postrouting "
+                        "ip saddr " + p.nat44_src + " "
+                        "oifname \"" + *wan4 + "\" "
+                        "tcp flags syn tcp option maxseg size set rt mtu "
+                        "comment \"flowforge:mss\"\n";
         }
         if (wan6 && !p.nat66_src.empty())
         {
-            rules += "add rule inet flowforge_post postrouting "
-                     "ip6 saddr " + p.nat66_src + " "
-                     "oifname \"" + *wan6 + "\" "
-                     "tcp flags syn tcp option maxseg size set clamp to pmtu "
-                     "comment \"flowforge:mss6\"\n";
+            rules_rt += "add rule inet flowforge_post postrouting "
+                        "ip6 saddr " + p.nat66_src + " "
+                        "oifname \"" + *wan6 + "\" "
+                        "tcp flags syn tcp option maxseg size set rt mtu "
+                        "comment \"flowforge:mss6\"\n";
         }
-        if (!rules.empty())
+        if (!rules_rt.empty())
         {
-            if (!NetConfig::nft_apply(rules))
+            if (!NetConfig::nft_apply(rules_rt))
             {
-                // ещё одна попытка «с чистого листа»
-                (void) NetConfig::nft_apply("delete table inet flowforge_post\n");
-                (void) NetConfig::nft_apply(mk);
-                (void) NetConfig::nft_apply(rules);
+                // Фоллбэк: фиксированное MSS из MTU (совместимо со старыми nft/ядрами)
+                const int mss4 = std::max(536, p.mtu - 40); // IPv4: 20 IP + 20 TCP
+                const int mss6 = std::max(536, p.mtu - 60); // IPv6: 40 IP + 20 TCP
+                std::string rules_fix;
+                if (wan4 && !p.nat44_src.empty())
+                {
+                    rules_fix += "add rule inet flowforge_post postrouting "
+                                 "ip saddr " + p.nat44_src + " "
+                                 "oifname \"" + *wan4 + "\" "
+                                 "tcp flags syn tcp option maxseg size set " + std::to_string(mss4) + " "
+                                 "comment \"flowforge:mss\"\n";
+                }
+                if (wan6 && !p.nat66_src.empty())
+                {
+                    rules_fix += "add rule inet flowforge_post postrouting "
+                                 "ip6 saddr " + p.nat66_src + " "
+                                 "oifname \"" + *wan6 + "\" "
+                                 "tcp flags syn tcp option maxseg size set " + std::to_string(mss6) + " "
+                                 "comment \"flowforge:mss6\"\n";
+                }
+                (void) NetConfig::nft_apply(rules_fix);
             }
         }
+
     }
 }
