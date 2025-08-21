@@ -206,6 +206,21 @@ NetworkRollback::NetworkRollback()
 
     // nft-таблиц может не быть — это не ошибка
     ok_ = true;
+
+    // --- Сохраняем baseline sysctl, которые сервер теперь меняет -----------------
+    ip6_accept_ra_all_prev_  = ReadSysctl("net.ipv6.conf.all.accept_ra");
+    ip6_accept_ra_def_prev_  = ReadSysctl("net.ipv6.conf.default.accept_ra");
+
+    ip4_acc_redir_all_prev_  = ReadSysctl("net.ipv4.conf.all.accept_redirects");
+    ip4_acc_redir_def_prev_  = ReadSysctl("net.ipv4.conf.default.accept_redirects");
+    ip4_send_redir_all_prev_ = ReadSysctl("net.ipv4.conf.all.send_redirects");
+    ip4_send_redir_def_prev_ = ReadSysctl("net.ipv4.conf.default.send_redirects");
+
+    ip6_acc_redir_all_prev_  = ReadSysctl("net.ipv6.conf.all.accept_redirects");
+    ip6_acc_redir_def_prev_  = ReadSysctl("net.ipv6.conf.default.accept_redirects");
+
+    ip4_accept_local_all_prev_ = ReadSysctl("net.ipv4.conf.all.accept_local");
+    ip4_accept_local_def_prev_ = ReadSysctl("net.ipv4.conf.default.accept_local");
 }
 
 NetworkRollback::~NetworkRollback()
@@ -234,6 +249,21 @@ void NetworkRollback::Restore_() noexcept
         const std::string key = "net.ipv6.conf." + kv.first + ".accept_ra";
         (void) WriteSysctl(key, kv.second);
     }
+
+    // --- Восстановление baseline sysctl (best-effort) ----------------------------
+    if (ip6_accept_ra_all_prev_)   (void) WriteSysctl("net.ipv6.conf.all.accept_ra",      *ip6_accept_ra_all_prev_);
+    if (ip6_accept_ra_def_prev_)   (void) WriteSysctl("net.ipv6.conf.default.accept_ra",  *ip6_accept_ra_def_prev_);
+
+    if (ip4_acc_redir_all_prev_)   (void) WriteSysctl("net.ipv4.conf.all.accept_redirects",    *ip4_acc_redir_all_prev_);
+    if (ip4_acc_redir_def_prev_)   (void) WriteSysctl("net.ipv4.conf.default.accept_redirects",*ip4_acc_redir_def_prev_);
+    if (ip4_send_redir_all_prev_)  (void) WriteSysctl("net.ipv4.conf.all.send_redirects",      *ip4_send_redir_all_prev_);
+    if (ip4_send_redir_def_prev_)  (void) WriteSysctl("net.ipv4.conf.default.send_redirects",  *ip4_send_redir_def_prev_);
+
+    if (ip6_acc_redir_all_prev_)   (void) WriteSysctl("net.ipv6.conf.all.accept_redirects",    *ip6_acc_redir_all_prev_);
+    if (ip6_acc_redir_def_prev_)   (void) WriteSysctl("net.ipv6.conf.default.accept_redirects",*ip6_acc_redir_def_prev_);
+
+    if (ip4_accept_local_all_prev_)(void) WriteSysctl("net.ipv4.conf.all.accept_local",        *ip4_accept_local_all_prev_);
+    if (ip4_accept_local_def_prev_)(void) WriteSysctl("net.ipv4.conf.default.accept_local",    *ip4_accept_local_def_prev_);
 
     // 2) Откат только наших таблиц (без затрагивания чужих правил)
     (void) NftRun("delete table inet flowforge_post");

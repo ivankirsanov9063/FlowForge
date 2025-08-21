@@ -152,6 +152,17 @@ namespace NetConfig
     std::optional<std::string> find_default_oifname(nl_sock *sk, int family);
 
     /**
+     * @brief Feature-probe: проверка доступности nftables в рантайме.
+     *
+     * Пытается выполнить безвредную nft-команду. Если libnftables/ядро
+     * не поддерживают nft (или система в режиме iptables-legacy),
+     * вернёт false.
+     *
+     * @return true если nftables доступен для конфигурации.
+     */
+    bool nft_feature_probe();
+
+    /**
      * @brief Применяет команды nftables.
      * @param commands Команды в виде строки.
      * @return true при успехе или если ошибка не критична.

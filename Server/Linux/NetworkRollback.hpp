@@ -75,6 +75,31 @@ private:
     /** @brief Снимок: table inet flowforge_post (может быть пустым). */
     std::string nft_inet_post_prev_;
 
+    // --- Новые baseline sysctl, которые мы теперь трогаем в ApplyServerSide ---
+    /** @brief net.ipv6.conf.all.accept_ra (глобально). */
+    std::optional<std::string> ip6_accept_ra_all_prev_;
+    /** @brief net.ipv6.conf.default.accept_ra. */
+    std::optional<std::string> ip6_accept_ra_def_prev_;
+
+    /** @brief net.ipv4.conf.all.accept_redirects. */
+    std::optional<std::string> ip4_acc_redir_all_prev_;
+    /** @brief net.ipv4.conf.default.accept_redirects. */
+    std::optional<std::string> ip4_acc_redir_def_prev_;
+    /** @brief net.ipv4.conf.all.send_redirects. */
+    std::optional<std::string> ip4_send_redir_all_prev_;
+    /** @brief net.ipv4.conf.default.send_redirects. */
+    std::optional<std::string> ip4_send_redir_def_prev_;
+
+    /** @brief net.ipv6.conf.all.accept_redirects. */
+    std::optional<std::string> ip6_acc_redir_all_prev_;
+    /** @brief net.ipv6.conf.default.accept_redirects. */
+    std::optional<std::string> ip6_acc_redir_def_prev_;
+
+    /** @brief net.ipv4.conf.all.accept_local. */
+    std::optional<std::string> ip4_accept_local_all_prev_;
+    /** @brief net.ipv4.conf.default.accept_local. */
+    std::optional<std::string> ip4_accept_local_def_prev_;
+
     /**
      * @brief Флаг успешного snapshot-а (sysctl + nftables).
      */

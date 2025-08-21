@@ -10,6 +10,7 @@
 #include <cerrno>
 #include <iostream>
 #include <sstream>
+#include <memory>
 
 static volatile sig_atomic_t working = true;
 
@@ -123,6 +124,12 @@ int main(int argc, char **argv)
     p.nat44_src = !nat44_src.empty() ? nat44_src : NetConfig::to_network_cidr(p.v4_local);
     p.nat66_src = !nat66_src.empty() ? nat66_src : NetConfig::to_network_cidr(p.v6_local);
 
+    if (with_nat_fw && !NetConfig::nft_feature_probe())
+    {
+        throw std::runtime_error("This platform doesn't support nftables."
+                                 "You can add --no-nat option to fix this mistake and to disable support of NAT");
+    }
+
     // 👉 применяем сетевую конфигурацию
     try
     {
@@ -136,10 +143,14 @@ int main(int argc, char **argv)
         return 1;
     }
 
-
     // 👉 Включаем вотчер за default route: при смене WAN пересоберёт NAT/MSS
     //    (используются дефолтные Params; при необходимости передай свои)
-    NetWatcher watcher{ p };
+    // 👉 NetWatcher нужен только при NAT/MSS. В режиме --no-nat не запускаем.
+    std::unique_ptr<NetWatcher> watcher;
+    if (with_nat_fw)
+    {
+        watcher = std::make_unique<NetWatcher>(p);
+    }
 
     if (!PluginWrapper::Server_Bind(plugin,
                                     static_cast<std::uint16_t>(port)))

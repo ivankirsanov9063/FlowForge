@@ -320,6 +320,28 @@ namespace NetConfig
         return name;
     }
 
+    bool nft_feature_probe()
+    {
+        nft_ctx *ctx = nft_ctx_new(NFT_CTX_DEFAULT);
+        if (!ctx) return false;
+        nft_ctx_buffer_output(ctx);
+        nft_ctx_buffer_error(ctx);
+
+        // Попытка №1: "list tables" (не меняет состояние)
+        int rc = nft_run_cmd_from_buffer(ctx, "list tables");
+        if (rc != 0)
+        {
+            // Запасной путь: пробуем создать/удалить временную таблицу
+            // (некоторые версии корректнее реагируют на add/delete)
+            (void) nft_run_cmd_from_buffer(ctx, "add table inet flowforge_probe");
+            rc = nft_run_cmd_from_buffer(ctx, "delete table inet flowforge_probe");
+        }
+
+        nft_ctx_free(ctx);
+        return rc == 0;
+    }
+
+
     bool nft_apply(const std::string &commands)
     {
         nft_ctx *ctx = nft_ctx_new(NFT_CTX_DEFAULT);
@@ -572,6 +594,43 @@ namespace NetConfig
 
         if (with_nat_fw)
         {
+            // Перед применением NAT/MSS убеждаемся, что nftables поддержан.
+            if (!nft_feature_probe())
+            {
+                throw std::runtime_error(
+                    "nftables недоступен (ядро/пользовательское окружение). "
+                    "Установите nftables/переключите альтернативы или запустите с --no-nat");
+            }
+
+            // --- Baseline sysctl для маршрутизатора (best-effort) ---------------------------
+            // IPv6: глобально запретить RA (на Router интерфейсах оно не нужно)
+            if (!write_sysctl("/proc/sys/net/ipv6/conf/all/accept_ra", "0"))
+                std::cerr << "WARN: sysctl net.ipv6.conf.all.accept_ra=0 failed\n";
+            if (!write_sysctl("/proc/sys/net/ipv6/conf/default/accept_ra", "0"))
+                std::cerr << "WARN: sysctl net.ipv6.conf.default.accept_ra=0 failed\n";
+
+            // IPv4: запретить ICMP redirects (глобально и по умолчанию)
+            if (!write_sysctl("/proc/sys/net/ipv4/conf/all/accept_redirects", "0"))
+                std::cerr << "WARN: sysctl net.ipv4.conf.all.accept_redirects=0 failed\n";
+            if (!write_sysctl("/proc/sys/net/ipv4/conf/default/accept_redirects", "0"))
+                std::cerr << "WARN: sysctl net.ipv4.conf.default.accept_redirects=0 failed\n";
+            if (!write_sysctl("/proc/sys/net/ipv4/conf/all/send_redirects", "0"))
+                std::cerr << "WARN: sysctl net.ipv4.conf.all.send_redirects=0 failed\n";
+            if (!write_sysctl("/proc/sys/net/ipv4/conf/default/send_redirects", "0"))
+                std::cerr << "WARN: sysctl net.ipv4.conf.default.send_redirects=0 failed\n";
+
+            // IPv6: запретить ICMPv6 redirects (глобально и по умолчанию)
+            if (!write_sysctl("/proc/sys/net/ipv6/conf/all/accept_redirects", "0"))
+                std::cerr << "WARN: sysctl net.ipv6.conf.all.accept_redirects=0 failed\n";
+            if (!write_sysctl("/proc/sys/net/ipv6/conf/default/accept_redirects", "0"))
+                std::cerr << "WARN: sysctl net.ipv6.conf.default.accept_redirects=0 failed\n";
+
+            // Hairpin/маскарадинг может требовать accept_local=1 (делаем только в режиме NAT/FW)
+            if (!write_sysctl("/proc/sys/net/ipv4/conf/all/accept_local", "1"))
+                std::cerr << "WARN: sysctl net.ipv4.conf.all.accept_local=1 failed\n";
+            if (!write_sysctl("/proc/sys/net/ipv4/conf/default/accept_local", "1"))
+                std::cerr << "WARN: sysctl net.ipv4.conf.default.accept_local=1 failed\n";
+            
             if (!write_sysctl("/proc/sys/net/ipv4/ip_forward", "1"))
             {
                 throw std::runtime_error("sysctl net.ipv4.ip_forward=1 failed");
