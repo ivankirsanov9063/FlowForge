@@ -9,6 +9,7 @@
 #include <unistd.h>
 #include <cerrno>
 #include <iostream>
+#include <sstream>
 
 static volatile sig_atomic_t working = true;
 
@@ -22,6 +23,14 @@ int main(int argc, char **argv)
     std::string tun         = "svpn0";
     int         port        = 5555;
     std::string plugin_path = "./libPlugUDP.so";
+    // Параметры адресации/NAT — теперь задаются флагами
+    std::string cidr4       = "10.8.0.1/24";
+    std::string cidr6       = "fd00:dead:beef::1/64";
+    std::string nat44_src; // если пусто — возьмём сеть из cidr4
+    std::string nat66_src; // если пусто — возьмём сеть из cidr6
+    int         mtu         = 1400;
+    bool        with_nat_fw = true;
+
 
     for (int i = 1; i < argc; ++i)
     {
@@ -38,9 +47,36 @@ int main(int argc, char **argv)
         {
             plugin_path = argv[++i];
         }
+        else if (a == "--cidr4" && i + 1 < argc)
+        {
+            cidr4 = argv[++i];
+        }
+        else if (a == "--cidr6" && i + 1 < argc)
+        {
+            cidr6 = argv[++i];
+        }
+        else if (a == "--nat44" && i + 1 < argc)
+        {
+            nat44_src = argv[++i];
+        }
+        else if (a == "--nat66" && i + 1 < argc)
+        {
+            nat66_src = argv[++i];
+        }
+        else if (a == "--mtu" && i + 1 < argc)
+        {
+            mtu = std::stoi(argv[++i]);
+        }
+        else if (a == "--no-nat")
+        {
+            with_nat_fw = false;
+        }
         else if (a == "-h" || a == "--help")
         {
-            std::cerr << "Usage: Server [--port 5555] [--tun svpn0] [--plugin ./libPlugUDP.so]\n";
+            std::cerr << "Usage: Server [--port 5555] [--tun svpn0] [--plugin ./libPlugUDP.so]\n"
+                         "              [--cidr4 10.8.0.1/24] [--cidr6 fd00:dead:beef::1/64]\n"
+                         "              [--nat44 <CIDR>] [--nat66 <CIDR>] [--mtu 1400] [--no-nat]\n";
+
             return 0;
         }
     }
@@ -50,8 +86,7 @@ int main(int argc, char **argv)
         std::cerr << "Требуются права root.\n";
         return 1;
     }
-
-
+    
     PluginWrapper::Plugin plugin = PluginWrapper::Load(plugin_path);
     if (!plugin.handle)
     {
@@ -67,8 +102,29 @@ int main(int argc, char **argv)
 
     NetworkRollback network_rollback{};
 
-    // 👉 передаём имя TUN в скрипт
-    if (!NetConfig::ApplyServerSide(tun))
+    // Сформировать Params из CLI
+    NetConfig::Params p{};
+    p.mtu = mtu;
+    if (!NetConfig::parse_cidr4(cidr4, p.v4_local))
+    {
+        std::cerr << "Invalid --cidr4: " << cidr4 << "\n";
+        close(tun_fd);
+        PluginWrapper::Unload(plugin);
+        return 1;
+    }
+    if (!NetConfig::parse_cidr6(cidr6, p.v6_local))
+    {
+        std::cerr << "Invalid --cidr6: " << cidr6 << "\n";
+        close(tun_fd);
+        PluginWrapper::Unload(plugin);
+        return 1;
+    }
+    // CIDR источника для NAT: задан пользователем или берём сеть TUN
+    p.nat44_src = !nat44_src.empty() ? nat44_src : NetConfig::to_network_cidr(p.v4_local);
+    p.nat66_src = !nat66_src.empty() ? nat66_src : NetConfig::to_network_cidr(p.v6_local);
+
+    // 👉 применяем сетевую конфигурацию
+    if (!NetConfig::ApplyServerSide(tun, p, with_nat_fw))
     {
         std::cerr << "Network setup failed\n";
         close(tun_fd);
@@ -78,8 +134,7 @@ int main(int argc, char **argv)
 
     // 👉 Включаем вотчер за default route: при смене WAN пересоберёт NAT/MSS
     //    (используются дефолтные Params; при необходимости передай свои)
-    NetWatcher watcher{ NetConfig::Params{} };
-
+    NetWatcher watcher{ p };
 
     if (!PluginWrapper::Server_Bind(plugin,
                                     static_cast<std::uint16_t>(port)))

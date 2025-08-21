@@ -116,6 +116,34 @@ namespace NetConfig
                                   std::uint8_t prefix);
 
     /**
+     * @brief Разобрать строку IPv4 CIDR в структуру CidrV4.
+     * @param s Строка формата "A.B.C.D/len". Если "/len" опущен, берётся 32.
+     * @param out Куда записать адрес/префикс.
+     * @return true при успехе.
+     */
+    bool parse_cidr4(const std::string &s, CidrV4 &out);
+
+    /**
+     * @brief Разобрать строку IPv6 CIDR в структуру CidrV6.
+     * @param s Строка формата "xxxx::1/len". Если "/len" опущен, берётся 128.
+     * @param out Куда записать адрес/префикс.
+     * @return true при успехе.
+     */
+    bool parse_cidr6(const std::string &s, CidrV6 &out);
+
+    /**
+     * @brief Вернуть строку сети вида "A.B.C.D/p" (обнуляя хостовые биты).
+     * @param c CIDR IPv4.
+     */
+    std::string to_network_cidr(const CidrV4 &c);
+
+    /**
+     * @brief Вернуть строку сети вида "xxxx::/p" (обнуляя хостовые биты).
+     * @param c CIDR IPv6.
+     */
+    std::string to_network_cidr(const CidrV6 &c);
+
+    /**
      * @brief Находит имя интерфейса для маршрута по умолчанию.
      * @param sk Сокет Netlink.
      * @param family AF_INET или AF_INET6.

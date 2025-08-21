@@ -9,6 +9,7 @@
 #include <cstring>
 #include <cerrno>
 #include <fstream>
+#include <sstream>
 
 #include <unistd.h>
 #include <fcntl.h>
@@ -374,6 +375,78 @@ namespace NetConfig
                 "comment \"flowforge:auto\"\n";
 
         return nft_apply(cmd);
+    }
+
+    // ---- CIDR parsing & normalization ---------------------------------------------------------
+    bool parse_cidr4(const std::string &s, CidrV4 &out)
+    {
+        auto pos = s.find('/');
+        std::string ip = (pos == std::string::npos) ? s : s.substr(0, pos);
+        int pref = (pos == std::string::npos) ? 32 : std::stoi(s.substr(pos + 1));
+        if (pref < 0 || pref > 32) return false;
+
+        in_addr ia{};
+        if (inet_pton(AF_INET, ip.c_str(), &ia) != 1) return false;
+        // inet_pton кладёт в network byte order — это и есть big-endian
+        std::memcpy(&out.addr_be, &ia.s_addr, sizeof(out.addr_be));
+        out.prefix = static_cast<std::uint8_t>(pref);
+        return true;
+    }
+
+    bool parse_cidr6(const std::string &s, CidrV6 &out)
+    {
+        auto pos = s.find('/');
+        std::string ip = (pos == std::string::npos) ? s : s.substr(0, pos);
+        int pref = (pos == std::string::npos) ? 128 : std::stoi(s.substr(pos + 1));
+        if (pref < 0 || pref > 128) return false;
+
+        in6_addr ia6{};
+        if (inet_pton(AF_INET6, ip.c_str(), &ia6) != 1) return false;
+        std::memcpy(out.addr.data(), &ia6, 16);
+        out.prefix = static_cast<std::uint8_t>(pref);
+        return true;
+    }
+
+    static void mask_ipv6(std::array<std::uint8_t,16> &a, int prefix)
+    {
+        if (prefix <= 0) { a.fill(0); return; }
+        if (prefix >= 128) return;
+        int full = prefix / 8;
+        int part = prefix % 8;
+        for (int i = full + 1; i < 16; ++i) a[i] = 0;
+        if (part != 0)
+        {
+            std::uint8_t mask = static_cast<std::uint8_t>(0xFFu << (8 - part));
+            a[full] &= mask;
+            for (int i = full + 1; i < 16; ++i) a[i] = 0;
+        }
+    }
+
+    std::string to_network_cidr(const CidrV4 &c)
+    {
+        std::uint32_t be = c.addr_be;
+        std::uint32_t host = (c.prefix == 0) ? 0xFFFFFFFFu : (0xFFFFFFFFu >> c.prefix);
+        std::uint32_t net_be = be & ~htonl(host);
+        in_addr ia{};
+        std::memcpy(&ia.s_addr, &net_be, sizeof(net_be));
+        char buf[INET_ADDRSTRLEN]{};
+        inet_ntop(AF_INET, &ia, buf, sizeof(buf));
+        std::ostringstream oss;
+        oss << buf << "/" << static_cast<int>(c.prefix);
+        return oss.str();
+    }
+
+    std::string to_network_cidr(const CidrV6 &c)
+    {
+        auto bytes = c.addr;
+        mask_ipv6(bytes, c.prefix);
+        in6_addr ia6{};
+        std::memcpy(&ia6, bytes.data(), 16);
+        char buf[INET6_ADDRSTRLEN]{};
+        inet_ntop(AF_INET6, &ia6, buf, sizeof(buf));
+        std::ostringstream oss;
+        oss << buf << "/" << static_cast<int>(c.prefix);
+        return oss.str();
     }
 
     // --- MSS clamp в postrouting (идемпотентно): inet/flowforge_post
