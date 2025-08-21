@@ -118,7 +118,7 @@ std::vector<std::string> NetworkRollback::ListIpv6ConfIfaces()
     return names;
 }
 
-std::string NetworkRollback::NftExportRuleset()
+std::string NetworkRollback::NftList(const std::string &list_cmd)
 {
     nft_ctx *ctx = nft_ctx_new(NFT_CTX_DEFAULT);
     if (!ctx)
@@ -130,13 +130,9 @@ std::string NetworkRollback::NftExportRuleset()
     nft_ctx_buffer_output(ctx);
     nft_ctx_buffer_error(ctx);
 
-    // По умолчанию вывод в текстовом формате (как в конфигурационных файлах nft)
-    int rc = nft_run_cmd_from_buffer(ctx, "list ruleset");
+    int rc = nft_run_cmd_from_buffer(ctx, list_cmd.c_str());
     if (rc != 0)
     {
-        const char *err = nft_ctx_get_error_buffer(ctx);
-        std::cerr << "[netrb] nft list ruleset failed rc=" << rc
-                  << " err=" << (err ? err : "") << "\n";
         nft_ctx_free(ctx);
         return {};
     }
@@ -185,11 +181,13 @@ NetworkRollback::NetworkRollback()
         }
     }
 
-    // 3) Сохраняем ruleset nftables (как текст конфигурации)
-    nft_ruleset_prev_ = NftExportRuleset();
+    // 3) Сохраняем ТОЛЬКО наши таблицы — компактно и достаточно для отката
+    nft_ip_nat_prev_    = NftList("list table ip flowforge_nat");
+    nft_ip6_nat_prev_   = NftList("list table ip6 flowforge_nat");
+    nft_inet_post_prev_ = NftList("list table inet flowforge_post");
 
-    // Считаем snapshot успешным, если ruleset считан (даже если каких-то sysctl нет)
-    ok_ = !nft_ruleset_prev_.empty();
+    // nft-таблиц может не быть — это не ошибка
+    ok_ = true;
 }
 
 NetworkRollback::~NetworkRollback()
@@ -219,12 +217,16 @@ void NetworkRollback::Restore_() noexcept
         (void) WriteSysctl(key, kv.second);
     }
 
-    // 2) Полный откат nftables: flush ruleset + загрузка сохранённого ruleset
-    //    Важно: это восстановит ровно то, что было на момент создания объекта.
-    //    Если за это время кто-то ещё менял правила — они будут потеряны.
-    if (!nft_ruleset_prev_.empty())
-    {
-        (void) NftRun("flush ruleset");
-        (void) NftRun(nft_ruleset_prev_);
-    }
+    // 2) Откат только наших таблиц (без затрагивания чужих правил)
+    (void) NftRun("delete table inet flowforge_post");
+    if (!nft_inet_post_prev_.empty())
+            (void) NftRun(nft_inet_post_prev_);
+
+    (void) NftRun("delete table ip flowforge_nat");
+    if (!nft_ip_nat_prev_.empty())
+            (void) NftRun(nft_ip_nat_prev_);
+
+    (void) NftRun("delete table ip6 flowforge_nat");
+    if (!nft_ip6_nat_prev_.empty())
+            (void) NftRun(nft_ip6_nat_prev_);
 }

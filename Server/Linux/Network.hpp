@@ -37,11 +37,8 @@ namespace NetConfig
     {
         int mtu = 1400; ///< MTU интерфейса.
 
-        CidrV4       v4_local   { inet_addr("10.8.0.1"), 32 }; ///< Локальный IPv4.
-        std::uint32_t v4_peer_be = inet_addr("10.8.0.2"); ///< IPv4 соседа.
-
-        CidrV6 v6_local { /* Локальный IPv6 */ { 0xfd,0x00,0xde,0xad,0xbe,0xef,0,0,0,0,0,0,0,0,0,1 }, 128 };
-        std::array<std::uint8_t, 16> v6_peer { /* IPv6 соседа */ { 0xfd,0x00,0xde,0xad,0xbe,0xef,0,0,0,0,0,0,0,0,0,2 } };
+        CidrV4       v4_local   { inet_addr("10.8.0.1"), 24 }; ///< Адрес шлюза TUN и префикс пула (без peer).
+        CidrV6 v6_local { /* Адрес шлюза TUN */ { 0xfd,0x00,0xde,0xad,0xbe,0xef,0,0,0,0,0,0,0,0,0,1 }, 64 };
 
         std::string nat44_src = "10.8.0.0/24";     ///< CIDR для NAT44.
         std::string nat66_src = "fd00:dead:beef::/64"; ///< CIDR для NAT66.
@@ -101,6 +98,11 @@ namespace NetConfig
                                 std::uint32_t peer_be,
                                 std::uint8_t  prefix);
 
+    /// Добавляет локальный IPv4 адрес с префиксом (без peer).
+    bool addr_add_v4_local(nl_sock *sk, int ifindex,
+                               std::uint32_t local_be,
+                               std::uint8_t  prefix);
+
     /**
      * @brief Добавляет локальный IPv6 адрес.
      * @param sk Сокет Netlink.
@@ -112,16 +114,6 @@ namespace NetConfig
     bool addr_add_v6_local(nl_sock *sk, int ifindex,
                                   const std::array<std::uint8_t, 16> &local,
                                   std::uint8_t prefix);
-
-    /**
-     * @brief Добавляет маршрут на IPv6-хост через on-link.
-     * @param sk Сокет Netlink.
-     * @param ifindex Индекс интерфейса.
-     * @param dst128 IPv6-адрес назначения /128.
-     * @return true при успехе или если маршрут уже существует.
-     */
-    bool route_add_onlink_host_v6(nl_sock *sk, int ifindex,
-                                         const std::array<std::uint8_t, 16> &dst128);
 
     /**
      * @brief Находит имя интерфейса для маршрута по умолчанию.

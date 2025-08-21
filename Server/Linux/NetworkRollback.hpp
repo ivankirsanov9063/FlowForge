@@ -10,17 +10,17 @@
 
 /**
  * @file NetworkRollback.hpp
- * @brief RAII-класс для сохранения и восстановления сетевого состояния хоста.
+ * @brief RAII-класс для отката сетевых правок, вносимых сервером.
  *
  * Класс не зависит от NetConfig/Network и не вызывает их функции.
  * В конструкторе делает "снимок" ключевых настроек:
  *  - sysctl: net.ipv4.ip_forward, net.ipv6.conf.all.forwarding,
  *            а также все net.ipv6.conf.*.accept_ra;
- *  - nftables: полный ruleset (экспорт через libnftables).
+ *  - nftables: содержимое ТОЛЬКО наших таблиц: ip/ip6 flowforge_nat, inet flowforge_post.
  *
  * В деструкторе:
  *  - восстанавливает сохранённые sysctl;
- *  - полностью сбрасывает текущий ruleset и загружает сохранённый.
+ *  - удаляет наши таблицы и загружает сохранённые копии (если были).
  *
  * Использование:
  *  NetworkRollback rb;
@@ -68,10 +68,12 @@ private:
      */
     std::unordered_map<std::string, std::string> accept_ra_prev_;
 
-    /**
-     * @brief Сохранённый ruleset nftables (текстовый формат, как вывод "list ruleset").
-     */
-    std::string nft_ruleset_prev_;
+    /** @brief Снимок: table ip flowforge_nat (может быть пустым). */
+    std::string nft_ip_nat_prev_;
+    /** @brief Снимок: table ip6 flowforge_nat (может быть пустым). */
+    std::string nft_ip6_nat_prev_;
+    /** @brief Снимок: table inet flowforge_post (может быть пустым). */
+    std::string nft_inet_post_prev_;
 
     /**
      * @brief Флаг успешного snapshot-а (sysctl + nftables).
@@ -101,10 +103,11 @@ private:
     static std::vector<std::string> ListIpv6ConfIfaces();
 
     /**
-     * @brief Экспортирует текущий ruleset nftables в текстовом виде.
-     * @return Строка с ruleset или пустая строка при ошибке.
+     * @brief Выполняет 'list ...' и возвращает вывод (или пустую строку, если объект отсутствует).
+     * @param list_cmd Команда вида "list table ip flowforge_nat".
      */
-    static std::string NftExportRuleset();
+    static std::string NftList(const std::string &list_cmd);
+
 
     /**
      * @brief Выполняет набор команд nftables из буфера.

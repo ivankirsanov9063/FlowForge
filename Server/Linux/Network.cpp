@@ -1,3 +1,5 @@
+#include "Network.hpp"
+
 #include <array>
 #include <cstdint>
 #include <optional>
@@ -26,42 +28,6 @@
 
 namespace NetConfig
 {
-    struct CidrV4
-    {
-        std::uint32_t addr_be;
-        std::uint8_t  prefix;
-    };
-
-    struct CidrV6
-    {
-        std::array<std::uint8_t, 16> addr;
-        std::uint8_t                 prefix;
-    };
-
-    struct Params
-    {
-        int mtu = 1400;
-
-        CidrV4       v4_local   { inet_addr("10.8.0.1"), 32 };
-        std::uint32_t v4_peer_be = inet_addr("10.8.0.2");
-
-        CidrV6 v6_local {
-                { 0xfd, 0x00, 0xde, 0xad, 0xbe, 0xef,
-                  0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-                  0x00, 0x00, 0x00, 0x01 },
-                128
-        };
-
-        std::array<std::uint8_t, 16> v6_peer {
-                { 0xfd, 0x00, 0xde, 0xad, 0xbe, 0xef,
-                  0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-                  0x00, 0x00, 0x00, 0x02 }
-        };
-
-        std::string nat44_src = "10.8.0.0/24";
-        std::string nat66_src = "fd00:dead:beef::/64";
-    };
-
     bool write_sysctl(const char *path,
                              const char *val)
     {
@@ -140,6 +106,35 @@ namespace NetConfig
         rtnl_link_put(link);
         return rc == 0;
     }
+
+    bool addr_add_v4_local(nl_sock    *sk,
+                           int         ifindex,
+                           std::uint32_t local_be,
+                           std::uint8_t  prefix)
+    {
+        rtnl_addr *a = rtnl_addr_alloc();
+        if (!a) return false;
+        rtnl_addr_set_ifindex(a, ifindex);
+        rtnl_addr_set_family(a, AF_INET);
+
+        nl_addr *l = nl_addr_build(AF_INET, &local_be, sizeof(local_be));
+        if (!l)
+        {
+            rtnl_addr_put(a);
+            return false;
+        }
+
+        rtnl_addr_set_local(a, l);
+        rtnl_addr_set_prefixlen(a, prefix);
+        // Для TUN p2p не нужен: подключённый маршрут на весь префикс появится автоматически.
+
+        const int rc = rtnl_addr_add(sk, a, 0);
+
+        nl_addr_put(l);
+        rtnl_addr_put(a);
+        return rc == 0 || rc == -NLE_EXIST;
+    }
+
     bool addr_flush_all(nl_sock *sk,
                                int      ifindex)
     {
@@ -437,13 +432,12 @@ namespace NetConfig
         write_if_sysctl(ifname, "disable_ipv6", "0");
 
         ok &= addr_flush_all(sk, ifindex);
-        ok &= addr_add_v4_p2p(sk, ifindex,
-                              p.v4_local.addr_be, p.v4_peer_be,
-                              p.v4_local.prefix);
+        ok &= addr_add_v4_local(sk, ifindex,
+            p.v4_local.addr_be,
+            p.v4_local.prefix);
 
         ok &= addr_add_v6_local(sk, ifindex,
                                 p.v6_local.addr, p.v6_local.prefix);
-        (void) route_add_onlink_host_v6(sk, ifindex, p.v6_peer);
 
         nl_socket_free(sk);
 
