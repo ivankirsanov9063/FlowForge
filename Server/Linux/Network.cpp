@@ -412,6 +412,68 @@ namespace NetConfig
         return nft_apply(cmd);
     }
 
+    // ---- Политики файрвола для TUN ----------------------------------------------------------
+    bool ensure_fw_tun(const std::string &ifname, const Params &p)
+    {
+        // 1) Таблица/цепочки + jump из hook-цепочек только для нашего TUN
+        std::string mk;
+        mk  = "add table inet flowforge_fw\n";
+        mk += "add chain inet flowforge_fw input  { type filter hook input  priority 0; policy accept; }\n";
+        mk += "add chain inet flowforge_fw forward{ type filter hook forward priority 0; policy accept; }\n";
+        mk += "add chain inet flowforge_fw tun_in { policy drop; }\n";
+        mk += "add chain inet flowforge_fw tun_fwd{ policy accept; }\n";
+        if (!nft_apply(mk)) {
+            (void) nft_apply("delete table inet flowforge_fw\n");
+            if (!nft_apply(mk)) return false;
+        }
+        // привязка к нашему интерфейсу
+        std::string jump;
+        jump  = "add rule inet flowforge_fw input  iifname \"" + ifname + "\" jump tun_in\n";
+        jump += "add rule inet flowforge_fw forward iifname \"" + ifname + "\" jump tun_fwd\n";
+        (void) nft_apply(jump); // идемпотентно
+
+        // 2) Чистим рабочие цепочки
+        if (!nft_apply("flush chain inet flowforge_fw tun_in\n")) {
+            (void) nft_apply("delete table inet flowforge_fw\n");
+            if (!nft_apply(mk)) return false;
+            (void) nft_apply(jump);
+        }
+        if (!nft_apply("flush chain inet flowforge_fw tun_fwd\n")) {
+            (void) nft_apply("delete table inet flowforge_fw\n");
+            if (!nft_apply(mk)) return false;
+            (void) nft_apply(jump);
+        }
+
+        const std::string net4 = to_network_cidr(p.v4_local);
+        const std::string net6 = to_network_cidr(p.v6_local);
+
+        // 3) Правила tun_in (INPUT на TUN): default drop, разрешаем только нужное
+        std::string in_rules;
+        in_rules += "add rule inet flowforge_fw tun_in ct state invalid drop\n";
+        in_rules += "add rule inet flowforge_fw tun_in ct state established,related accept\n";
+        if (p.v4_local.prefix > 0)
+            in_rules += "add rule inet flowforge_fw tun_in ip  saddr != " + net4 + " drop\n";
+        if (p.v6_local.prefix > 0)
+            in_rules += "add rule inet flowforge_fw tun_in ip6 saddr != " + net6 + " drop\n";
+        // Разрешаем минимально необходимые ICMP* c лимитом
+        in_rules += "add rule inet flowforge_fw tun_in ip protocol icmp icmp type { echo-request, destination-unreachable, time-exceeded, parameter-problem } limit rate 10/second accept\n";
+        in_rules += "add rule inet flowforge_fw tun_in icmpv6 type { echo-request, packet-too-big, time-exceeded, parameter-problem, destination-unreachable } limit rate 10/second accept\n";
+        if (!nft_apply(in_rules)) return false;
+
+        // 4) Правила tun_fwd (FORWARD из TUN): антиспуфинг + состояние
+        std::string fwd_rules;
+        fwd_rules += "add rule inet flowforge_fw tun_fwd ct state invalid drop\n";
+        if (p.v4_local.prefix > 0)
+            fwd_rules += "add rule inet flowforge_fw tun_fwd ip  saddr != " + net4 + " drop\n";
+        if (p.v6_local.prefix > 0)
+            fwd_rules += "add rule inet flowforge_fw tun_fwd ip6 saddr != " + net6 + " drop\n";
+        fwd_rules += "add rule inet flowforge_fw tun_fwd ct state established,related accept\n";
+        fwd_rules += "add rule inet flowforge_fw tun_fwd accept\n";
+        if (!nft_apply(fwd_rules)) return false;
+
+        return true;
+    }
+
     // ---- CIDR parsing & normalization ---------------------------------------------------------
     bool parse_cidr4(const std::string &s, CidrV4 &out)
     {
@@ -640,6 +702,21 @@ namespace NetConfig
                 throw std::runtime_error("sysctl net.ipv6.conf.all.forwarding=1 failed");
             }
         }
+        else
+        {
+            // Режим без NAT: если nft доступен — всё равно зададим базовый fw на TUN (best-effort)
+            if (nft_feature_probe())
+            {
+                if (!ensure_fw_tun(ifname, p))
+                {
+                    std::cerr << "WARN: ensure_fw_tun failed (skipped)\n";
+                }
+            }
+            else
+            {
+                std::cerr << "WARN: nftables unavailable — skipping TUN firewall\n";
+            }
+        }
 
         nl_sock *sk2 = nl_connect_route();
         if (!sk2)
@@ -677,6 +754,12 @@ namespace NetConfig
             if (!ensure_mss_clamp(wan4, wan6, p))
             {
                 std::cerr << "WARN: ensure_mss_clamp failed (MSS clamp skipped)\n";
+            }
+
+            // Политики файрвола на TUN обязательны при наличии nft
+            if (!ensure_fw_tun(ifname, p))
+            {
+                throw std::runtime_error("ensure_fw_tun failed");
             }
         }
     }

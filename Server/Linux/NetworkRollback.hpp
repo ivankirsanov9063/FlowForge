@@ -74,6 +74,8 @@ private:
     std::string nft_ip6_nat_prev_;
     /** @brief Снимок: table inet flowforge_post (может быть пустым). */
     std::string nft_inet_post_prev_;
+    /** @brief Снимок: table inet flowforge_fw (может быть пустым). */
+    std::string nft_inet_fw_prev_;
 
     // --- Новые baseline sysctl, которые мы теперь трогаем в ApplyServerSide ---
     /** @brief net.ipv6.conf.all.accept_ra (глобально). */

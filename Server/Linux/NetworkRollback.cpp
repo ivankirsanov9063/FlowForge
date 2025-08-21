@@ -203,6 +203,7 @@ NetworkRollback::NetworkRollback()
     nft_ip_nat_prev_    = NftList("list table ip flowforge_nat");
     nft_ip6_nat_prev_   = NftList("list table ip6 flowforge_nat");
     nft_inet_post_prev_ = NftList("list table inet flowforge_post");
+    nft_inet_fw_prev_   = NftList("list table inet flowforge_fw");
 
     // nft-таблиц может не быть — это не ошибка
     ok_ = true;
@@ -277,4 +278,8 @@ void NetworkRollback::Restore_() noexcept
     (void) NftRun("delete table ip6 flowforge_nat");
     if (!nft_ip6_nat_prev_.empty())
             (void) NftRun(nft_ip6_nat_prev_);
+
+    (void) NftRun("delete table inet flowforge_fw");
+    if (!nft_inet_fw_prev_.empty())
+        (void) NftRun(nft_inet_fw_prev_);
 }
