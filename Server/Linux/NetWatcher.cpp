@@ -17,6 +17,7 @@
 #include <netlink/cache.h>
 #include <netlink/route/route.h>
 #include <netlink/route/nexthop.h>
+#include <netlink/errno.h>
 
 namespace
 {
@@ -52,14 +53,34 @@ NetWatcher::NetWatcher(const NetConfig::Params &params)
     }
 
     // Подписываемся на события изменения маршрутов IPv4/IPv6
-    (void) nl_socket_add_membership(sk_, RTNLGRP_IPV4_ROUTE);
-    (void) nl_socket_add_membership(sk_, RTNLGRP_IPV6_ROUTE);
+    if (nl_socket_add_membership(sk_, RTNLGRP_IPV4_ROUTE) != 0)
+    {
+        nl_socket_free(sk_);
+        sk_ = nullptr;
+        throw std::runtime_error("NetWatcher: nl_socket_add_membership RTNLGRP_IPV4_ROUTE failed");
+    }
+    if (nl_socket_add_membership(sk_, RTNLGRP_IPV6_ROUTE) != 0)
+    {
+        nl_socket_free(sk_);
+        sk_ = nullptr;
+        throw std::runtime_error("NetWatcher: nl_socket_add_membership RTNLGRP_IPV6_ROUTE failed");
+    }
 
     // Неблокирующий режим + периодический опрос
-    nl_socket_set_nonblocking(sk_);
+    if (nl_socket_set_nonblocking(sk_) != 0)
+    {
+        nl_socket_free(sk_);
+        sk_ = nullptr;
+        throw std::runtime_error("NetWatcher: nl_socket_set_nonblocking failed");
+    }
 
     // Коллбек на валидные сообщения (содержание неважно — после события пересчитаем WAN)
-    nl_socket_modify_cb(sk_, NL_CB_VALID, NL_CB_CUSTOM, &on_nl_valid, this);
+    if (nl_socket_modify_cb(sk_, NL_CB_VALID, NL_CB_CUSTOM, &on_nl_valid, this) != 0)
+    {
+        nl_socket_free(sk_);
+        sk_ = nullptr;
+        throw std::runtime_error("NetWatcher: nl_socket_modify_cb(NL_CB_VALID) failed");
+    }
 
     // Запускаем рабочий поток
     th_ = std::thread([this]
@@ -98,17 +119,36 @@ std::optional<std::string> NetWatcher::Wan6() const
 void NetWatcher::ThreadMain_()
 {
     // Первичное применение: на текущий дефолт
-    RecomputeAndApply_();
+    try
+    {
+        RecomputeAndApply_();
+    }
+    catch (const std::exception &)
+    {
+        stop_.store(true, std::memory_order_relaxed);
+        return;
+    }
 
     using namespace std::chrono_literals;
 
     while (!stop_.load(std::memory_order_relaxed))
     {
-        // Считать все доступные события (не блокируясь навечно)
-        (void) nl_recvmsgs_default(sk_);
+        int rc = nl_recvmsgs_default(sk_);
+        if (rc < 0 && rc != -NLE_AGAIN)
+        {
+            stop_.store(true, std::memory_order_relaxed);
+            break;
+        }
 
-        // После чтения пакетов — попытаться пересчитать WAN и, если изменились, применить
-        RecomputeAndApply_();
+        try
+        {
+            RecomputeAndApply_();
+        }
+        catch (const std::exception &)
+        {
+            stop_.store(true, std::memory_order_relaxed);
+            break;
+        }
 
         std::this_thread::sleep_for(200ms);
     }
@@ -125,7 +165,7 @@ void NetWatcher::RecomputeAndApply_()
         std::lock_guard<std::mutex> lock(mu_);
         if (wan4 != last_wan4_ || wan6 != last_wan6_)
         {
-            changed   = true;
+            changed    = true;
             last_wan4_ = wan4;
             last_wan6_ = wan6;
         }
@@ -150,11 +190,14 @@ void NetWatcher::ApplyNatAndMss_(const std::optional<std::string> &wan4,
         cmd4  = "add table ip flowforge_nat\n";
         cmd4 += "add chain ip flowforge_nat postrouting { type nat hook postrouting priority 100 ; policy accept; }\n";
         cmd4 += "flush chain ip flowforge_nat postrouting\n";
-        (void) NetConfig::nft_apply(cmd4);
+        if (!NetConfig::nft_apply(cmd4))
+        {
+            throw std::runtime_error("NetWatcher: nft apply for IPv4 NAT bootstrap failed");
+        }
 
         if (wan4 && !p.nat44_src.empty())
         {
-            (void) NetConfig::ensure_nat44(*wan4, p.nat44_src); // идемпотентно
+            (void) NetConfig::ensure_nat44(*wan4, p.nat44_src);
         }
     }
     {
@@ -163,11 +206,14 @@ void NetWatcher::ApplyNatAndMss_(const std::optional<std::string> &wan4,
         cmd6  = "add table ip6 flowforge_nat\n";
         cmd6 += "add chain ip6 flowforge_nat postrouting { type nat hook postrouting priority 100 ; policy accept; }\n";
         cmd6 += "flush chain ip6 flowforge_nat postrouting\n";
-        (void) NetConfig::nft_apply(cmd6);
+        if (!NetConfig::nft_apply(cmd6))
+        {
+            throw std::runtime_error("NetWatcher: nft apply for IPv6 NAT bootstrap failed");
+        }
 
         if (wan6 && !p.nat66_src.empty())
         {
-            (void) NetConfig::ensure_nat66(*wan6, p.nat66_src); // идемпотентно
+            (void) NetConfig::ensure_nat66(*wan6, p.nat66_src);
         }
     }
 
@@ -181,16 +227,21 @@ void NetWatcher::ApplyNatAndMss_(const std::optional<std::string> &wan4,
 
         if (!NetConfig::nft_apply(mk))
         {
-            // fallback: удалить и создать заново
             (void) NetConfig::nft_apply("delete table inet flowforge_post\n");
-            (void) NetConfig::nft_apply(mk);
+            if (!NetConfig::nft_apply(mk))
+            {
+                throw std::runtime_error("NetWatcher: nft apply for MSS table/chain failed");
+            }
         }
 
         // Шаг 2: отдельный flush (старые nft падают, если делать всё одним батчем)
         if (!NetConfig::nft_apply("flush chain inet flowforge_post postrouting\n"))
         {
             (void) NetConfig::nft_apply("delete table inet flowforge_post\n");
-            (void) NetConfig::nft_apply(mk);
+            if (!NetConfig::nft_apply(mk))
+            {
+                throw std::runtime_error("NetWatcher: nft flush/recreate for MSS chain failed");
+            }
         }
 
         // Шаг 3: правила (сначала современный синтаксис RT MTU, затем фоллбэк)
@@ -217,9 +268,8 @@ void NetWatcher::ApplyNatAndMss_(const std::optional<std::string> &wan4,
         {
             if (!NetConfig::nft_apply(rules_rt))
             {
-                // Фоллбэк: фиксированный MSS из MTU (совместимо со старыми nft/ядрами)
-                const int mss4 = std::max(536, p.mtu - 40); // IPv4: 20 IP + 20 TCP
-                const int mss6 = std::max(536, p.mtu - 60); // IPv6: 40 IP + 20 TCP
+                const int mss4 = std::max(536, p.mtu - 40);
+                const int mss6 = std::max(536, p.mtu - 60);
 
                 std::string rules_fix;
 
@@ -240,7 +290,10 @@ void NetWatcher::ApplyNatAndMss_(const std::optional<std::string> &wan4,
                                  "comment \"flowforge:mss6\"\n";
                 }
 
-                (void) NetConfig::nft_apply(rules_fix);
+                if (!rules_fix.empty() && !NetConfig::nft_apply(rules_fix))
+                {
+                    throw std::runtime_error("NetWatcher: nft apply for MSS fallback rules failed");
+                }
             }
         }
     }

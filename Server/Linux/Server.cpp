@@ -86,124 +86,134 @@ int main(int argc,
         }
     }
 
-    if (geteuid() != 0)
-    {
-        std::cerr << "Требуются права root.\n";
-        return 1;
-    }
+    PluginWrapper::Plugin plugin{}; // для корректной выгрузки в случае исключений
+    bool plugin_loaded = false;
+    int  tun_fd        = -1;
 
-    PluginWrapper::Plugin plugin = PluginWrapper::Load(plugin_path);
-    if (!plugin.handle)
-    {
-        return 1;
-    }
-
-    int tun_fd = TunAlloc(tun);
-    if (tun_fd < 0)
-    {
-        PluginWrapper::Unload(plugin);
-        return 1;
-    }
-
-    NetworkRollback network_rollback{};
-
-    // Сформировать Params из CLI
-    NetConfig::Params p{};
-    p.mtu = mtu;
-
-    if (!NetConfig::parse_cidr4(cidr4, p.v4_local))
-    {
-        std::cerr << "Invalid --cidr4: " << cidr4 << "\n";
-        close(tun_fd);
-        PluginWrapper::Unload(plugin);
-        return 1;
-    }
-    if (!NetConfig::parse_cidr6(cidr6, p.v6_local))
-    {
-        std::cerr << "Invalid --cidr6: " << cidr6 << "\n";
-        close(tun_fd);
-        PluginWrapper::Unload(plugin);
-        return 1;
-    }
-
-    // CIDR источника для NAT: задан пользователем или берём сеть TUN
-    p.nat44_src = !nat44_src.empty() ? nat44_src : NetConfig::to_network_cidr(p.v4_local);
-    p.nat66_src = !nat66_src.empty() ? nat66_src : NetConfig::to_network_cidr(p.v6_local);
-
-    if (with_nat_fw && !NetConfig::nft_feature_probe())
-    {
-        throw std::runtime_error(
-            "This platform doesn't support nftables."
-            "You can add --no-nat option to fix this mistake and to disable support of NAT");
-    }
-
-    // Применяем сетевую конфигурацию
     try
     {
+        if (geteuid() != 0)
+        {
+            throw std::runtime_error("Root privileges are required.");
+        }
+
+        plugin = PluginWrapper::Load(plugin_path);
+        if (!plugin.handle)
+        {
+            throw std::runtime_error("Failed to load plugin: " + plugin_path);
+        }
+        plugin_loaded = true;
+
+        tun_fd = TunAlloc(tun);
+        if (tun_fd < 0)
+        {
+            throw std::runtime_error("Failed to create TUN interface: " + tun);
+        }
+
+        NetworkRollback network_rollback{};
+        if (!network_rollback.Ok())
+        {
+            throw std::runtime_error("Failed to snapshot network baseline for rollback.");
+        }
+
+        NetConfig::Params p{};
+        p.mtu = mtu;
+
+        if (!NetConfig::parse_cidr4(cidr4, p.v4_local))
+        {
+            throw std::invalid_argument("Invalid --cidr4: " + cidr4);
+        }
+        if (!NetConfig::parse_cidr6(cidr6, p.v6_local))
+        {
+            throw std::invalid_argument("Invalid --cidr6: " + cidr6);
+        }
+
+        p.nat44_src = !nat44_src.empty() ? nat44_src : NetConfig::to_network_cidr(p.v4_local);
+        p.nat66_src = !nat66_src.empty() ? nat66_src : NetConfig::to_network_cidr(p.v6_local);
+
+        if (with_nat_fw && !NetConfig::nft_feature_probe())
+        {
+            throw std::runtime_error(
+                "This platform doesn't support nftables. "
+                "Use --no-nat to disable NAT/MSS features.");
+        }
+
         NetConfig::ApplyServerSide(tun, p, with_nat_fw);
+
+        std::unique_ptr<NetWatcher> watcher;
+        if (with_nat_fw)
+        {
+            watcher = std::make_unique<NetWatcher>(p);
+        }
+
+        if (!PluginWrapper::Server_Bind(
+                plugin,
+                static_cast<std::uint16_t>(port)))
+        {
+            throw std::runtime_error("Failed to bind server on port " + std::to_string(port));
+        }
+
+        int status = fcntl(tun_fd, F_GETFL, 0);
+        if (status >= 0)
+        {
+            fcntl(tun_fd, F_SETFL, status | O_NONBLOCK);
+        }
+
+        auto send_to_net = [tun_fd](const std::uint8_t *data,
+                                    std::size_t        len) -> ssize_t
+        {
+            return write(tun_fd, data, len);
+        };
+
+        auto receive_from_net = [tun_fd](std::uint8_t *buffer,
+                                         std::size_t   size) -> ssize_t
+        {
+            ssize_t count = read(tun_fd, buffer, size);
+            if (count < 0)
+            {
+                if (errno == EAGAIN || errno == EWOULDBLOCK)
+                {
+                    return 0;
+                }
+                return -1;
+            }
+            return count;
+        };
+
+        std::signal(SIGINT, on_exit);
+        std::signal(SIGTERM, on_exit);
+
+        PluginWrapper::Server_Serve(
+            plugin,
+            receive_from_net,
+            send_to_net,
+            &working);
+
+        if (tun_fd >= 0)
+        {
+            close(tun_fd);
+            tun_fd = -1;
+        }
+        if (plugin_loaded)
+        {
+            PluginWrapper::Unload(plugin);
+            plugin_loaded = false;
+        }
+        return 0;
     }
     catch (const std::exception &e)
     {
-        std::cerr << "Network setup failed: " << e.what() << "\n";
-        close(tun_fd);
-        PluginWrapper::Unload(plugin);
-        return 1;
-    }
-
-    // Вотчер за default route: при смене WAN пересоберёт NAT/MSS
-    // NetWatcher нужен только при NAT/MSS. В режиме --no-nat не запускаем.
-    std::unique_ptr<NetWatcher> watcher;
-    if (with_nat_fw)
-    {
-        watcher = std::make_unique<NetWatcher>(p);
-    }
-
-    if (!PluginWrapper::Server_Bind(
-            plugin,
-            static_cast<std::uint16_t>(port)))
-    {
-        close(tun_fd);
-        PluginWrapper::Unload(plugin);
-        return 1;
-    }
-
-    int status = fcntl(tun_fd, F_GETFL, 0);
-    if (status >= 0)
-    {
-        fcntl(tun_fd, F_SETFL, status | O_NONBLOCK);
-    }
-
-    auto send_to_net = [tun_fd](const std::uint8_t *data,
-                                std::size_t        len) -> ssize_t
-    {
-        return write(tun_fd, data, len);
-    };
-
-    auto receive_from_net = [tun_fd](std::uint8_t *buffer,
-                                     std::size_t   size) -> ssize_t
-    {
-        ssize_t count = read(tun_fd, buffer, size);
-        if (count < 0)
+        std::cerr << "Fatal: " << e.what() << "\n";
+        if (tun_fd >= 0)
         {
-            if (errno == EAGAIN || errno == EWOULDBLOCK)
-            {
-                return 0;
-            }
-            return -1;
+            close(tun_fd);
+            tun_fd = -1;
         }
-        return count;
-    };
-
-    std::signal(SIGINT, on_exit);
-    std::signal(SIGTERM, on_exit);
-
-    PluginWrapper::Server_Serve(
-        plugin,
-        receive_from_net,
-        send_to_net,
-        &working);
-
-    close(tun_fd);
-    PluginWrapper::Unload(plugin);
-    return 0;
+        if (plugin_loaded)
+        {
+            PluginWrapper::Unload(plugin);
+            plugin_loaded = false;
+        }
+        return 1;
+    }
 }

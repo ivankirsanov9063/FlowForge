@@ -934,8 +934,8 @@ namespace NetConfig
             if (!nft_feature_probe())
             {
                 throw std::runtime_error(
-                    "nftables недоступен (ядро/пользовательское окружение). "
-                    "Установите nftables/переключите альтернативы или запустите с --no-nat");
+                    "nftables is not available (kernel/userland). "
+                    "Install nftables or run with --no-nat");
             }
 
             // --- Baseline sysctl для маршрутизатора (best-effort) ---------------------------

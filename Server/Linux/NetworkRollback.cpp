@@ -71,7 +71,6 @@ std::optional<std::string> NetworkRollback::ReadSysctl(const std::string &dotted
         return std::nullopt;
     }
 
-    // trim trailing whitespace/newlines
     while (!data.empty() &&
            (data.back() == '\n' || data.back() == ' ' || data.back() == '\t'))
     {
@@ -87,7 +86,6 @@ bool NetworkRollback::WriteSysctl(const std::string &dotted,
     int               fd   = ::open(path.c_str(), O_WRONLY | O_CLOEXEC);
     if (fd < 0)
     {
-        // Если интерфейс уже исчез (ENOENT) — не шумим.
         if (errno != ENOENT)
         {
             std::cerr << "[netrb] WriteSysctl: open failed path=" << path
@@ -142,7 +140,6 @@ std::string NetworkRollback::NftList(const std::string &list_cmd)
         return {};
     }
 
-    // буферизуем stdout/err
     nft_ctx_buffer_output(ctx);
     nft_ctx_buffer_error(ctx);
 
@@ -177,7 +174,6 @@ bool NetworkRollback::NftRun(const std::string &script)
     {
         const char *err = nft_ctx_get_error_buffer(ctx);
 
-        // Удаление несуществующих таблиц — нормальное состояние при откате.
         std::string e = err ? std::string(err) : std::string();
         std::string s = script;
 
@@ -216,11 +212,9 @@ bool NetworkRollback::NftRun(const std::string &script)
 
 NetworkRollback::NetworkRollback()
 {
-    // 1) Сохраняем важные sysctl
     ip_forward_prev_  = ReadSysctl("net.ipv4.ip_forward");
     ip6_forward_prev_ = ReadSysctl("net.ipv6.conf.all.forwarding");
 
-    // 2) Сохраняем accept_ra для всех известных интерфейсов
     for (const std::string &iface : ListIpv6ConfIfaces())
     {
         const std::string key = "net.ipv6.conf." + iface + ".accept_ra";
@@ -230,16 +224,13 @@ NetworkRollback::NetworkRollback()
         }
     }
 
-    // 3) Сохраняем ТОЛЬКО наши таблицы — компактно и достаточно для отката
     nft_ip_nat_prev_    = NftList("list table ip flowforge_nat");
     nft_ip6_nat_prev_   = NftList("list table ip6 flowforge_nat");
     nft_inet_post_prev_ = NftList("list table inet flowforge_post");
     nft_inet_fw_prev_   = NftList("list table inet flowforge_fw");
 
-    // nft-таблиц может не быть — это не ошибка
     ok_ = true;
 
-    // --- Сохраняем baseline sysctl, которые сервер теперь меняет -----------------
     ip6_accept_ra_all_prev_  = ReadSysctl("net.ipv6.conf.all.accept_ra");
     ip6_accept_ra_def_prev_  = ReadSysctl("net.ipv6.conf.default.accept_ra");
 
@@ -267,7 +258,6 @@ bool NetworkRollback::Ok() const
 
 void NetworkRollback::Restore_() noexcept
 {
-    // 1) Восстановление sysctl (best-effort)
     if (ip_forward_prev_)
     {
         (void) WriteSysctl("net.ipv4.ip_forward", *ip_forward_prev_);
@@ -282,7 +272,6 @@ void NetworkRollback::Restore_() noexcept
         (void) WriteSysctl(key, kv.second);
     }
 
-    // --- Восстановление baseline sysctl (best-effort) ----------------------------
     if (ip6_accept_ra_all_prev_)
     {
         (void) WriteSysctl("net.ipv6.conf.all.accept_ra", *ip6_accept_ra_all_prev_);
@@ -327,7 +316,6 @@ void NetworkRollback::Restore_() noexcept
         (void) WriteSysctl("net.ipv4.conf.default.accept_local", *ip4_accept_local_def_prev_);
     }
 
-    // 2) Откат только наших таблиц (без затрагивания чужих правил)
     (void) NftRun("delete table inet flowforge_post");
     if (!nft_inet_post_prev_.empty())
     {
