@@ -1,3 +1,7 @@
+cmake_minimum_required(VERSION 3.20)
+
+project(Client LANGUAGES CXX)
+
 add_executable(Client
         ${CMAKE_SYSTEM_NAME}/Client.cpp
         ${CMAKE_SYSTEM_NAME}/Network.cpp
@@ -11,7 +15,9 @@ add_executable(Client
         ${CMAKE_SOURCE_DIR}/Logger.cpp
 )
 
-target_compile_definitions(Client PRIVATE _WIN32_WINNT=0x0602 BOOST_USE_WINAPI_VERSION=0x0602)
+if (CMAKE_SYSTEM_NAME STREQUAL "Windows")
+    target_compile_definitions(Client PRIVATE _WIN32_WINNT=0x0602 BOOST_USE_WINAPI_VERSION=0x0602)
+endif()
 
 target_compile_features(Client PRIVATE cxx_std_23)
 
