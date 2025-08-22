@@ -1,4 +1,5 @@
 #include "NetworkRollback.hpp"
+#include "Logger.hpp"
 
 #include <dirent.h>
 #include <fcntl.h>
@@ -19,6 +20,7 @@ namespace
 {
     std::string ToProcSysPath(const std::string &dotted)
     {
+        LOGT("networkrollback") << "ToProcSysPath: key=" << dotted;
         std::string p = "/proc/sys/";
         p.reserve(p.size() + dotted.size());
         for (char c : dotted)
@@ -30,6 +32,7 @@ namespace
 
     std::string ReadAllFromFd(int fd)
     {
+        LOGT("networkrollback") << "ReadAllFromFd: begin";
         std::string out;
         char        buf[4096];
         for (;;)
@@ -50,16 +53,19 @@ namespace
             }
             break;
         }
+        LOGT("networkrollback") << "ReadAllFromFd: read=" << out.size() << " bytes";
         return out;
     }
 }
 
 std::optional<std::string> NetworkRollback::ReadSysctl(const std::string &dotted)
 {
+    LOGD("networkrollback") << "ReadSysctl: key=" << dotted;
     const std::string path = ToProcSysPath(dotted);
     int               fd   = ::open(path.c_str(), O_RDONLY | O_CLOEXEC);
     if (fd < 0)
     {
+        LOGW("networkrollback") << "ReadSysctl: open failed path=" << path << " errno=" << errno;
         return std::nullopt;
     }
 
@@ -68,6 +74,7 @@ std::optional<std::string> NetworkRollback::ReadSysctl(const std::string &dotted
 
     if (data.empty())
     {
+        LOGW("networkrollback") << "ReadSysctl: empty value path=" << path;
         return std::nullopt;
     }
 
@@ -76,12 +83,14 @@ std::optional<std::string> NetworkRollback::ReadSysctl(const std::string &dotted
     {
         data.pop_back();
     }
+    LOGT("networkrollback") << "ReadSysctl: ok key=" << dotted << " value='" << data << "'";
     return data;
 }
 
 bool NetworkRollback::WriteSysctl(const std::string &dotted,
                                   const std::string &value)
 {
+    LOGD("networkrollback") << "WriteSysctl: key=" << dotted << " value='" << value << "'";
     const std::string path = ToProcSysPath(dotted);
     int               fd   = ::open(path.c_str(), O_WRONLY | O_CLOEXEC);
     if (fd < 0)
@@ -90,6 +99,11 @@ bool NetworkRollback::WriteSysctl(const std::string &dotted,
         {
             std::cerr << "[netrb] WriteSysctl: open failed path=" << path
                       << " errno=" << errno << "\n";
+            LOGE("networkrollback") << "WriteSysctl: open failed path=" << path << " errno=" << errno;
+        }
+        else
+        {
+            LOGT("networkrollback") << "WriteSysctl: ENOENT path=" << path << " (skipped)";
         }
         return errno == ENOENT ? true : false;
     }
@@ -103,18 +117,22 @@ bool NetworkRollback::WriteSysctl(const std::string &dotted,
     {
         std::cerr << "[netrb] WriteSysctl: write failed path=" << path
                   << " errno=" << errno << "\n";
+        LOGE("networkrollback") << "WriteSysctl: short write path=" << path << " need=" << need << " wrote=" << n;
         return false;
     }
+    LOGD("networkrollback") << "WriteSysctl: ok key=" << dotted;
     return true;
 }
 
 std::vector<std::string> NetworkRollback::ListIpv6ConfIfaces()
 {
+    LOGT("networkrollback") << "ListIpv6ConfIfaces: begin";
     std::vector<std::string> names;
 
     DIR *d = ::opendir("/proc/sys/net/ipv6/conf");
     if (!d)
     {
+        LOGW("networkrollback") << "ListIpv6ConfIfaces: opendir failed errno=" << errno;
         return names;
     }
 
@@ -128,15 +146,18 @@ std::vector<std::string> NetworkRollback::ListIpv6ConfIfaces()
     }
 
     ::closedir(d);
+    LOGD("networkrollback") << "ListIpv6ConfIfaces: count=" << names.size();
     return names;
 }
 
 std::string NetworkRollback::NftList(const std::string &list_cmd)
 {
+    LOGT("networkrollback") << "NftList: cmd='" << list_cmd << "'";
     nft_ctx *ctx = nft_ctx_new(NFT_CTX_DEFAULT);
     if (!ctx)
     {
         std::cerr << "[netrb] nft_ctx_new failed\n";
+        LOGE("networkrollback") << "NftList: nft_ctx_new failed";
         return {};
     }
 
@@ -146,6 +167,7 @@ std::string NetworkRollback::NftList(const std::string &list_cmd)
     int rc = nft_run_cmd_from_buffer(ctx, list_cmd.c_str());
     if (rc != 0)
     {
+        LOGW("networkrollback") << "NftList: rc=" << rc << " (returning empty)";
         nft_ctx_free(ctx);
         return {};
     }
@@ -154,15 +176,18 @@ std::string NetworkRollback::NftList(const std::string &list_cmd)
     std::string  out = buf ? std::string(buf) : std::string();
 
     nft_ctx_free(ctx);
+    LOGD("networkrollback") << "NftList: bytes=" << out.size();
     return out;
 }
 
 bool NetworkRollback::NftRun(const std::string &script)
 {
+    LOGT("networkrollback") << "NftRun: script (" << script.size() << " bytes)";
     nft_ctx *ctx = nft_ctx_new(NFT_CTX_DEFAULT);
     if (!ctx)
     {
         std::cerr << "[netrb] nft_ctx_new failed\n";
+        LOGE("networkrollback") << "NftRun: nft_ctx_new failed";
         return false;
     }
 
@@ -200,6 +225,11 @@ bool NetworkRollback::NftRun(const std::string &script)
         {
             std::cerr << "[netrb] nft run failed rc=" << rc
                       << " err=" << (err ? err : "") << "\n";
+            LOGE("networkrollback") << "NftRun: rc=" << rc << " err=" << (err ? err : "(none)");
+        }
+        else
+        {
+            LOGD("networkrollback") << "NftRun: benign delete error rc=" << rc;
         }
 
         nft_ctx_free(ctx);
@@ -207,11 +237,13 @@ bool NetworkRollback::NftRun(const std::string &script)
     }
 
     nft_ctx_free(ctx);
+    LOGD("networkrollback") << "NftRun: ok";
     return true;
 }
 
 NetworkRollback::NetworkRollback()
 {
+    LOGI("networkrollback") << "Ctor: snapshot sysctls and nftables";
     ip_forward_prev_  = ReadSysctl("net.ipv4.ip_forward");
     ip6_forward_prev_ = ReadSysctl("net.ipv6.conf.all.forwarding");
 
@@ -244,20 +276,27 @@ NetworkRollback::NetworkRollback()
 
     ip4_accept_local_all_prev_ = ReadSysctl("net.ipv4.conf.all.accept_local");
     ip4_accept_local_def_prev_ = ReadSysctl("net.ipv4.conf.default.accept_local");
+
+    LOGD("networkrollback") << "Ctor: snapshot complete";
 }
 
 NetworkRollback::~NetworkRollback()
 {
+    LOGI("networkrollback") << "Dtor: revert baseline begin";
     Restore_();
+    LOGI("networkrollback") << "Dtor: revert baseline done";
 }
 
 bool NetworkRollback::Ok() const
 {
+    LOGT("networkrollback") << "Ok: " << (ok_ ? "true" : "false");
     return ok_;
 }
 
 void NetworkRollback::Restore_() noexcept
 {
+    LOGD("networkrollback") << "Restore_: begin";
+
     if (ip_forward_prev_)
     {
         (void) WriteSysctl("net.ipv4.ip_forward", *ip_forward_prev_);
@@ -339,4 +378,6 @@ void NetworkRollback::Restore_() noexcept
     {
         (void) NftRun(nft_inet_fw_prev_);
     }
+
+    LOGD("networkrollback") << "Restore_: done";
 }
