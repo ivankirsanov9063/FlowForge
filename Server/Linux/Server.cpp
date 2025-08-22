@@ -98,7 +98,7 @@ int main(int argc,
         }
         else if (a == "-h" || a == "--help")
         {
-            std::cerr
+            LOGI("server")
                 << "Usage: Server [--port 5555] [--tun svpn0] [--plugin ./libPlugUDP.so]\n"
                    "              [--cidr4 10.8.0.1/24] [--cidr6 fd00:dead:beef::1/64]\n"
                    "              [--nat44 <CIDR>] [--nat66 <CIDR>] [--mtu 1400] [--no-nat]\n";
@@ -267,7 +267,6 @@ int main(int argc,
     catch (const std::exception &e)
     {
         LOGE("server") << "Fatal: " << e.what();
-        std::cerr << "Fatal: " << e.what() << "\n";
         if (tun_fd >= 0)
         {
             LOGD("server") << "Cleanup on error: closing TUN";

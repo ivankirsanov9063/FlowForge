@@ -583,8 +583,8 @@ namespace NetConfig
             if (!benign)
             {
                 LOGE("network") << "nft_apply: error rc=" << rc << " (see stderr dump)";
-                std::cerr << "[nft] ERROR: " << (err ? err : "(no error text)") << "\n";
-                std::cerr << "[nft] COMMANDS:\n" << commands << "\n";
+                LOGE("network") << "nft_apply: stderr: " << (err ? err : "(no error text)");
+                LOGE("network") << "nft_apply: commands:\n" << commands;
             }
             else
             {
@@ -650,7 +650,7 @@ namespace NetConfig
             if (!nft_apply(cmd))
             {
                 LOGW("network") << "ensure_mss_clamp: command failed";
-                std::cerr << "[mss] failed cmd: " << cmd;
+                LOGW("network") << "ensure_mss_clamp: failed cmd: " << cmd;
                 return false;
             }
             return true;
@@ -736,7 +736,7 @@ namespace NetConfig
             if (!nft_apply(cmd))
             {
                 LOGW("network") << "ensure_fw_tun: command failed";
-                std::cerr << "[fw] failed cmd: " << cmd;
+                LOGW("network") << "ensure_fw_tun: failed cmd: " << cmd;
                 return false;
             }
             return true;
@@ -1137,55 +1137,45 @@ namespace NetConfig
             if (!write_sysctl("/proc/sys/net/ipv6/conf/all/accept_ra", "0"))
             {
                 LOGW("network") << "ApplyServerSide: sysctl all.accept_ra=0 failed";
-                std::cerr << "WARN: sysctl net.ipv6.conf.all.accept_ra=0 failed\n";
             }
             if (!write_sysctl("/proc/sys/net/ipv6/conf/default/accept_ra", "0"))
             {
                 LOGW("network") << "ApplyServerSide: sysctl default.accept_ra=0 failed";
-                std::cerr << "WARN: sysctl net.ipv6.conf.default.accept_ra=0 failed\n";
             }
 
             if (!write_sysctl("/proc/sys/net/ipv4/conf/all/accept_redirects", "0"))
             {
                 LOGW("network") << "ApplyServerSide: sysctl v4 all.accept_redirects=0 failed";
-                std::cerr << "WARN: sysctl net.ipv4.conf.all.accept_redirects=0 failed\n";
             }
             if (!write_sysctl("/proc/sys/net/ipv4/conf/default/accept_redirects", "0"))
             {
                 LOGW("network") << "ApplyServerSide: sysctl v4 default.accept_redirects=0 failed";
-                std::cerr << "WARN: sysctl net.ipv4.conf.default.accept_redirects=0 failed\n";
             }
             if (!write_sysctl("/proc/sys/net/ipv4/conf/all/send_redirects", "0"))
             {
                 LOGW("network") << "ApplyServerSide: sysctl all.send_redirects=0 failed";
-                std::cerr << "WARN: sysctl net.ipv4.conf.all.send_redirects=0 failed\n";
             }
             if (!write_sysctl("/proc/sys/net/ipv4/conf/default/send_redirects", "0"))
             {
                 LOGW("network") << "ApplyServerSide: sysctl default.send_redirects=0 failed";
-                std::cerr << "WARN: sysctl net.ipv4.conf.default.send_redirects=0 failed\n";
             }
 
             if (!write_sysctl("/proc/sys/net/ipv6/conf/all/accept_redirects", "0"))
             {
                 LOGW("network") << "ApplyServerSide: sysctl v6 all.accept_redirects=0 failed";
-                std::cerr << "WARN: sysctl net.ipv6.conf.all.accept_redirects=0 failed\n";
             }
             if (!write_sysctl("/proc/sys/net/ipv6/conf/default/accept_redirects", "0"))
             {
                 LOGW("network") << "ApplyServerSide: sysctl v6 default.accept_redirects=0 failed";
-                std::cerr << "WARN: sysctl net.ipv6.conf.default.accept_redirects=0 failed\n";
             }
 
             if (!write_sysctl("/proc/sys/net/ipv4/conf/all/accept_local", "1"))
             {
                 LOGW("network") << "ApplyServerSide: sysctl all.accept_local=1 failed";
-                std::cerr << "WARN: sysctl net.ipv4.conf.all.accept_local=1 failed\n";
             }
             if (!write_sysctl("/proc/sys/net/ipv4/conf/default/accept_local", "1"))
             {
                 LOGW("network") << "ApplyServerSide: sysctl default.accept_local=1 failed";
-                std::cerr << "WARN: sysctl net.ipv4.conf.default.accept_local=1 failed\n";
             }
 
             if (!write_sysctl("/proc/sys/net/ipv4/ip_forward", "1"))
@@ -1206,13 +1196,11 @@ namespace NetConfig
                 if (!ensure_fw_tun(ifname, p))
                 {
                     LOGW("network") << "ApplyServerSide: ensure_fw_tun failed (skipped)";
-                    std::cerr << "WARN: ensure_fw_tun failed (skipped)\n";
                 }
             }
             else
             {
                 LOGW("network") << "ApplyServerSide: nftables unavailable — skipping TUN firewall";
-                std::cerr << "WARN: nftables unavailable — skipping TUN firewall\n";
             }
         }
 
@@ -1255,7 +1243,6 @@ namespace NetConfig
             if (!ensure_mss_clamp(wan4, wan6, p))
             {
                 LOGW("network") << "ApplyServerSide: ensure_mss_clamp failed (skipped)";
-                std::cerr << "WARN: ensure_mss_clamp failed (MSS clamp skipped)\n";
             }
 
             if (!ensure_fw_tun(ifname, p))

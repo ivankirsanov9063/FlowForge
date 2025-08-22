@@ -97,8 +97,6 @@ bool NetworkRollback::WriteSysctl(const std::string &dotted,
     {
         if (errno != ENOENT)
         {
-            std::cerr << "[netrb] WriteSysctl: open failed path=" << path
-                      << " errno=" << errno << "\n";
             LOGE("networkrollback") << "WriteSysctl: open failed path=" << path << " errno=" << errno;
         }
         else
@@ -115,8 +113,6 @@ bool NetworkRollback::WriteSysctl(const std::string &dotted,
 
     if (n != static_cast<ssize_t>(need))
     {
-        std::cerr << "[netrb] WriteSysctl: write failed path=" << path
-                  << " errno=" << errno << "\n";
         LOGE("networkrollback") << "WriteSysctl: short write path=" << path << " need=" << need << " wrote=" << n;
         return false;
     }
@@ -156,7 +152,6 @@ std::string NetworkRollback::NftList(const std::string &list_cmd)
     nft_ctx *ctx = nft_ctx_new(NFT_CTX_DEFAULT);
     if (!ctx)
     {
-        std::cerr << "[netrb] nft_ctx_new failed\n";
         LOGE("networkrollback") << "NftList: nft_ctx_new failed";
         return {};
     }
@@ -186,7 +181,6 @@ bool NetworkRollback::NftRun(const std::string &script)
     nft_ctx *ctx = nft_ctx_new(NFT_CTX_DEFAULT);
     if (!ctx)
     {
-        std::cerr << "[netrb] nft_ctx_new failed\n";
         LOGE("networkrollback") << "NftRun: nft_ctx_new failed";
         return false;
     }
@@ -223,8 +217,6 @@ bool NetworkRollback::NftRun(const std::string &script)
 
         if (!benign_delete)
         {
-            std::cerr << "[netrb] nft run failed rc=" << rc
-                      << " err=" << (err ? err : "") << "\n";
             LOGE("networkrollback") << "NftRun: rc=" << rc << " err=" << (err ? err : "(none)");
         }
         else
