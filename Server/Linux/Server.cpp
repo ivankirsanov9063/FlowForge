@@ -1,3 +1,5 @@
+// Server.cpp — серверная часть: TUN, NAT/MSS, плагин транспорта
+
 #include "PluginWrapper.hpp"
 #include "TUN.hpp"
 #include "Network.hpp"
@@ -9,8 +11,9 @@
 #include <unistd.h>
 #include <cerrno>
 #include <iostream>
-#include <sstream>
 #include <memory>
+#include <stdexcept>
+#include <cstdint>
 
 static volatile sig_atomic_t working = true;
 
@@ -19,19 +22,20 @@ void on_exit(int)
     working = false;
 }
 
-int main(int argc, char **argv)
+int main(int argc,
+         char **argv)
 {
     std::string tun         = "svpn0";
     int         port        = 5555;
     std::string plugin_path = "./libPlugUDP.so";
-    // Параметры адресации/NAT — теперь задаются флагами
+
+    // Параметры адресации/NAT — задаются флагами
     std::string cidr4       = "10.8.0.1/24";
     std::string cidr6       = "fd00:dead:beef::1/64";
     std::string nat44_src; // если пусто — возьмём сеть из cidr4
     std::string nat66_src; // если пусто — возьмём сеть из cidr6
     int         mtu         = 1400;
     bool        with_nat_fw = true;
-
 
     for (int i = 1; i < argc; ++i)
     {
@@ -74,10 +78,10 @@ int main(int argc, char **argv)
         }
         else if (a == "-h" || a == "--help")
         {
-            std::cerr << "Usage: Server [--port 5555] [--tun svpn0] [--plugin ./libPlugUDP.so]\n"
-                         "              [--cidr4 10.8.0.1/24] [--cidr6 fd00:dead:beef::1/64]\n"
-                         "              [--nat44 <CIDR>] [--nat66 <CIDR>] [--mtu 1400] [--no-nat]\n";
-
+            std::cerr
+                << "Usage: Server [--port 5555] [--tun svpn0] [--plugin ./libPlugUDP.so]\n"
+                   "              [--cidr4 10.8.0.1/24] [--cidr6 fd00:dead:beef::1/64]\n"
+                   "              [--nat44 <CIDR>] [--nat66 <CIDR>] [--mtu 1400] [--no-nat]\n";
             return 0;
         }
     }
@@ -87,7 +91,7 @@ int main(int argc, char **argv)
         std::cerr << "Требуются права root.\n";
         return 1;
     }
-    
+
     PluginWrapper::Plugin plugin = PluginWrapper::Load(plugin_path);
     if (!plugin.handle)
     {
@@ -106,6 +110,7 @@ int main(int argc, char **argv)
     // Сформировать Params из CLI
     NetConfig::Params p{};
     p.mtu = mtu;
+
     if (!NetConfig::parse_cidr4(cidr4, p.v4_local))
     {
         std::cerr << "Invalid --cidr4: " << cidr4 << "\n";
@@ -120,17 +125,19 @@ int main(int argc, char **argv)
         PluginWrapper::Unload(plugin);
         return 1;
     }
+
     // CIDR источника для NAT: задан пользователем или берём сеть TUN
     p.nat44_src = !nat44_src.empty() ? nat44_src : NetConfig::to_network_cidr(p.v4_local);
     p.nat66_src = !nat66_src.empty() ? nat66_src : NetConfig::to_network_cidr(p.v6_local);
 
     if (with_nat_fw && !NetConfig::nft_feature_probe())
     {
-        throw std::runtime_error("This platform doesn't support nftables."
-                                 "You can add --no-nat option to fix this mistake and to disable support of NAT");
+        throw std::runtime_error(
+            "This platform doesn't support nftables."
+            "You can add --no-nat option to fix this mistake and to disable support of NAT");
     }
 
-    // 👉 применяем сетевую конфигурацию
+    // Применяем сетевую конфигурацию
     try
     {
         NetConfig::ApplyServerSide(tun, p, with_nat_fw);
@@ -143,17 +150,17 @@ int main(int argc, char **argv)
         return 1;
     }
 
-    // 👉 Включаем вотчер за default route: при смене WAN пересоберёт NAT/MSS
-    //    (используются дефолтные Params; при необходимости передай свои)
-    // 👉 NetWatcher нужен только при NAT/MSS. В режиме --no-nat не запускаем.
+    // Вотчер за default route: при смене WAN пересоберёт NAT/MSS
+    // NetWatcher нужен только при NAT/MSS. В режиме --no-nat не запускаем.
     std::unique_ptr<NetWatcher> watcher;
     if (with_nat_fw)
     {
         watcher = std::make_unique<NetWatcher>(p);
     }
 
-    if (!PluginWrapper::Server_Bind(plugin,
-                                    static_cast<std::uint16_t>(port)))
+    if (!PluginWrapper::Server_Bind(
+            plugin,
+            static_cast<std::uint16_t>(port)))
     {
         close(tun_fd);
         PluginWrapper::Unload(plugin);
@@ -187,14 +194,16 @@ int main(int argc, char **argv)
         return count;
     };
 
-    std::signal(SIGINT,  on_exit);
+    std::signal(SIGINT, on_exit);
     std::signal(SIGTERM, on_exit);
 
-    PluginWrapper::Server_Serve(plugin,
-                                receive_from_net,
-                                send_to_net,
-                                &working);
+    PluginWrapper::Server_Serve(
+        plugin,
+        receive_from_net,
+        send_to_net,
+        &working);
 
     close(tun_fd);
     PluginWrapper::Unload(plugin);
+    return 0;
 }

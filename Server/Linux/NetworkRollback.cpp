@@ -1,17 +1,18 @@
 #include "NetworkRollback.hpp"
 
-// Проектные заголовки — отсутствуют
-
-// Стандартные заголовки
 #include <dirent.h>
 #include <fcntl.h>
 #include <unistd.h>
+
 #include <cerrno>
 #include <cstring>
 #include <iostream>
 #include <algorithm>
+#include <string>
+#include <vector>
+#include <optional>
+#include <cctype>
 
-// Внешние зависимости
 #include <nftables/libnftables.h>
 
 namespace
@@ -30,7 +31,7 @@ namespace
     std::string ReadAllFromFd(int fd)
     {
         std::string out;
-        char buf[4096];
+        char        buf[4096];
         for (;;)
         {
             ssize_t n = ::read(fd, buf, sizeof(buf));
@@ -56,19 +57,23 @@ namespace
 std::optional<std::string> NetworkRollback::ReadSysctl(const std::string &dotted)
 {
     const std::string path = ToProcSysPath(dotted);
-    int fd = ::open(path.c_str(), O_RDONLY | O_CLOEXEC);
+    int               fd   = ::open(path.c_str(), O_RDONLY | O_CLOEXEC);
     if (fd < 0)
     {
         return std::nullopt;
     }
+
     std::string data = ReadAllFromFd(fd);
     ::close(fd);
+
     if (data.empty())
     {
         return std::nullopt;
     }
+
     // trim trailing whitespace/newlines
-    while (!data.empty() && (data.back() == '\n' || data.back() == ' ' || data.back() == '\t'))
+    while (!data.empty() &&
+           (data.back() == '\n' || data.back() == ' ' || data.back() == '\t'))
     {
         data.pop_back();
     }
@@ -79,7 +84,7 @@ bool NetworkRollback::WriteSysctl(const std::string &dotted,
                                   const std::string &value)
 {
     const std::string path = ToProcSysPath(dotted);
-    int fd = ::open(path.c_str(), O_WRONLY | O_CLOEXEC);
+    int               fd   = ::open(path.c_str(), O_WRONLY | O_CLOEXEC);
     if (fd < 0)
     {
         // Если интерфейс уже исчез (ENOENT) — не шумим.
@@ -90,10 +95,12 @@ bool NetworkRollback::WriteSysctl(const std::string &dotted,
         }
         return errno == ENOENT ? true : false;
     }
+
     const size_t  need = value.size();
     const ssize_t n    = ::write(fd, value.c_str(), need);
 
     ::close(fd);
+
     if (n != static_cast<ssize_t>(need))
     {
         std::cerr << "[netrb] WriteSysctl: write failed path=" << path
@@ -106,11 +113,13 @@ bool NetworkRollback::WriteSysctl(const std::string &dotted,
 std::vector<std::string> NetworkRollback::ListIpv6ConfIfaces()
 {
     std::vector<std::string> names;
+
     DIR *d = ::opendir("/proc/sys/net/ipv6/conf");
     if (!d)
     {
         return names;
     }
+
     while (dirent *e = ::readdir(d))
     {
         if (e->d_name[0] == '.')
@@ -119,6 +128,7 @@ std::vector<std::string> NetworkRollback::ListIpv6ConfIfaces()
         }
         names.emplace_back(e->d_name);
     }
+
     ::closedir(d);
     return names;
 }
@@ -131,6 +141,7 @@ std::string NetworkRollback::NftList(const std::string &list_cmd)
         std::cerr << "[netrb] nft_ctx_new failed\n";
         return {};
     }
+
     // буферизуем stdout/err
     nft_ctx_buffer_output(ctx);
     nft_ctx_buffer_error(ctx);
@@ -141,8 +152,10 @@ std::string NetworkRollback::NftList(const std::string &list_cmd)
         nft_ctx_free(ctx);
         return {};
     }
-    const char *buf = nft_ctx_get_output_buffer(ctx);
-    std::string out = buf ? std::string(buf) : std::string();
+
+    const char  *buf = nft_ctx_get_output_buffer(ctx);
+    std::string  out = buf ? std::string(buf) : std::string();
+
     nft_ctx_free(ctx);
     return out;
 }
@@ -155,30 +168,48 @@ bool NetworkRollback::NftRun(const std::string &script)
         std::cerr << "[netrb] nft_ctx_new failed\n";
         return false;
     }
+
     nft_ctx_buffer_output(ctx);
     nft_ctx_buffer_error(ctx);
+
     int rc = nft_run_cmd_from_buffer(ctx, script.c_str());
     if (rc != 0)
     {
         const char *err = nft_ctx_get_error_buffer(ctx);
+
         // Удаление несуществующих таблиц — нормальное состояние при откате.
         std::string e = err ? std::string(err) : std::string();
         std::string s = script;
-        std::transform(e.begin(), e.end(), e.begin(),
-                       [](unsigned char c){ return static_cast<char>(std::tolower(c)); });
-        std::transform(s.begin(), s.end(), s.begin(),
-                       [](unsigned char c){ return static_cast<char>(std::tolower(c)); });
+
+        std::transform(e.begin(),
+                       e.end(),
+                       e.begin(),
+                       [](unsigned char c)
+                       {
+                           return static_cast<char>(std::tolower(c));
+                       });
+        std::transform(s.begin(),
+                       s.end(),
+                       s.begin(),
+                       [](unsigned char c)
+                       {
+                           return static_cast<char>(std::tolower(c));
+                       });
+
         const bool benign_delete =
             (s.find("delete ") != std::string::npos) &&
             (e.find("no such file or directory") != std::string::npos);
+
         if (!benign_delete)
         {
             std::cerr << "[netrb] nft run failed rc=" << rc
                       << " err=" << (err ? err : "") << "\n";
         }
+
         nft_ctx_free(ctx);
         return benign_delete;
     }
+
     nft_ctx_free(ctx);
     return true;
 }
@@ -236,7 +267,7 @@ bool NetworkRollback::Ok() const
 
 void NetworkRollback::Restore_() noexcept
 {
-    // 1) Восстановление sysctl (делаем best-effort, не прерываемся при ошибках)
+    // 1) Восстановление sysctl (best-effort)
     if (ip_forward_prev_)
     {
         (void) WriteSysctl("net.ipv4.ip_forward", *ip_forward_prev_);
@@ -252,34 +283,72 @@ void NetworkRollback::Restore_() noexcept
     }
 
     // --- Восстановление baseline sysctl (best-effort) ----------------------------
-    if (ip6_accept_ra_all_prev_)   (void) WriteSysctl("net.ipv6.conf.all.accept_ra",      *ip6_accept_ra_all_prev_);
-    if (ip6_accept_ra_def_prev_)   (void) WriteSysctl("net.ipv6.conf.default.accept_ra",  *ip6_accept_ra_def_prev_);
+    if (ip6_accept_ra_all_prev_)
+    {
+        (void) WriteSysctl("net.ipv6.conf.all.accept_ra", *ip6_accept_ra_all_prev_);
+    }
+    if (ip6_accept_ra_def_prev_)
+    {
+        (void) WriteSysctl("net.ipv6.conf.default.accept_ra", *ip6_accept_ra_def_prev_);
+    }
 
-    if (ip4_acc_redir_all_prev_)   (void) WriteSysctl("net.ipv4.conf.all.accept_redirects",    *ip4_acc_redir_all_prev_);
-    if (ip4_acc_redir_def_prev_)   (void) WriteSysctl("net.ipv4.conf.default.accept_redirects",*ip4_acc_redir_def_prev_);
-    if (ip4_send_redir_all_prev_)  (void) WriteSysctl("net.ipv4.conf.all.send_redirects",      *ip4_send_redir_all_prev_);
-    if (ip4_send_redir_def_prev_)  (void) WriteSysctl("net.ipv4.conf.default.send_redirects",  *ip4_send_redir_def_prev_);
+    if (ip4_acc_redir_all_prev_)
+    {
+        (void) WriteSysctl("net.ipv4.conf.all.accept_redirects", *ip4_acc_redir_all_prev_);
+    }
+    if (ip4_acc_redir_def_prev_)
+    {
+        (void) WriteSysctl("net.ipv4.conf.default.accept_redirects", *ip4_acc_redir_def_prev_);
+    }
+    if (ip4_send_redir_all_prev_)
+    {
+        (void) WriteSysctl("net.ipv4.conf.all.send_redirects", *ip4_send_redir_all_prev_);
+    }
+    if (ip4_send_redir_def_prev_)
+    {
+        (void) WriteSysctl("net.ipv4.conf.default.send_redirects", *ip4_send_redir_def_prev_);
+    }
 
-    if (ip6_acc_redir_all_prev_)   (void) WriteSysctl("net.ipv6.conf.all.accept_redirects",    *ip6_acc_redir_all_prev_);
-    if (ip6_acc_redir_def_prev_)   (void) WriteSysctl("net.ipv6.conf.default.accept_redirects",*ip6_acc_redir_def_prev_);
+    if (ip6_acc_redir_all_prev_)
+    {
+        (void) WriteSysctl("net.ipv6.conf.all.accept_redirects", *ip6_acc_redir_all_prev_);
+    }
+    if (ip6_acc_redir_def_prev_)
+    {
+        (void) WriteSysctl("net.ipv6.conf.default.accept_redirects", *ip6_acc_redir_def_prev_);
+    }
 
-    if (ip4_accept_local_all_prev_)(void) WriteSysctl("net.ipv4.conf.all.accept_local",        *ip4_accept_local_all_prev_);
-    if (ip4_accept_local_def_prev_)(void) WriteSysctl("net.ipv4.conf.default.accept_local",    *ip4_accept_local_def_prev_);
+    if (ip4_accept_local_all_prev_)
+    {
+        (void) WriteSysctl("net.ipv4.conf.all.accept_local", *ip4_accept_local_all_prev_);
+    }
+    if (ip4_accept_local_def_prev_)
+    {
+        (void) WriteSysctl("net.ipv4.conf.default.accept_local", *ip4_accept_local_def_prev_);
+    }
 
     // 2) Откат только наших таблиц (без затрагивания чужих правил)
     (void) NftRun("delete table inet flowforge_post");
     if (!nft_inet_post_prev_.empty())
-            (void) NftRun(nft_inet_post_prev_);
+    {
+        (void) NftRun(nft_inet_post_prev_);
+    }
 
     (void) NftRun("delete table ip flowforge_nat");
     if (!nft_ip_nat_prev_.empty())
-            (void) NftRun(nft_ip_nat_prev_);
+    {
+        (void) NftRun(nft_ip_nat_prev_);
+    }
 
     (void) NftRun("delete table ip6 flowforge_nat");
     if (!nft_ip6_nat_prev_.empty())
-            (void) NftRun(nft_ip6_nat_prev_);
+    {
+        (void) NftRun(nft_ip6_nat_prev_);
+    }
 
     (void) NftRun("delete table inet flowforge_fw");
     if (!nft_inet_fw_prev_.empty())
+    {
         (void) NftRun(nft_inet_fw_prev_);
+    }
 }

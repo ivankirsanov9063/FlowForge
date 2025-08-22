@@ -10,29 +10,28 @@
 
 /**
  * @file NetWatcher.hpp
- * @brief Вотчер за изменениями default route и пересборкой NAT/MSS.
+ * @brief Вотчер за изменениями default route с пересборкой NAT/MSS.
  *
- * Класс отслеживает netlink-события RTNLGRP_IPV4_ROUTE / RTNLGRP_IPV6_ROUTE.
- * На каждое изменение маршрута по умолчанию:
- *  - вычисляет WAN-интерфейсы для AF_INET/AF_INET6 (через NetConfig::find_default_oifname),
- *  - идемпотентно пересоздаёт NAT44/NAT66 (через NetConfig::ensure_nat44/ensure_nat66),
- *  - идемпотентно пересоздаёт MSS clamp (через nft-команды в собственной цепочке).
- *
- * Ошибки инициализации выбрасываются как std::runtime_error.
- * Деструктор останавливает внутренний поток.
+ * Отслеживает RTNLGRP_IPV4_ROUTE/RTNLGRP_IPV6_ROUTE, при изменениях
+ * переопределяет NAT44/NAT66 и MSS clamp идемпотентно.
+ * Ошибки инициализации — std::runtime_error. Деструктор останавливает поток.
  */
+
+// Внешняя зависимость libnl скрыта от заголовка.
+struct nl_sock;
+
 class NetWatcher
 {
 public:
     /**
      * @brief Конструктор: запускает вотчер.
-     * @param params Параметры NAT (CIDR источника для v4/v6 и прочее).
-     * @throws std::runtime_error при ошибке инициализации netlink.
+     * @param params Параметры сетевой конфигурации (MTU, CIDR источника NAT и т. п.).
+     * @throws std::runtime_error При ошибке инициализации netlink/nftables.
      */
     explicit NetWatcher(const NetConfig::Params &params = NetConfig::Params{});
 
     /**
-     * @brief Деструктор: корректно останавливает поток.
+     * @brief Деструктор: корректно завершает поток и освобождает ресурсы.
      */
     ~NetWatcher();
 
@@ -50,12 +49,12 @@ public:
 
 private:
     /**
-     * @brief Копия параметров конфигурации (CIDR для NAT и т.п.).
+     * @brief Параметры конфигурации (CIDR для NAT, MTU и пр.).
      */
     NetConfig::Params params_;
 
     /**
-     * @brief NETLINK_ROUTE сокет (libnl).
+     * @brief NETLINK_ROUTE сокет (libnl), владеем ресурсом.
      */
     nl_sock *sk_ = nullptr;
 
@@ -65,12 +64,12 @@ private:
     std::atomic<bool> stop_{false};
 
     /**
-     * @brief Рабочий поток, ожидающий события netlink.
+     * @brief Рабочий поток, читающий netlink-события.
      */
     std::thread th_;
 
     /**
-     * @brief Мьютекс для доступа к last_wan4_/last_wan6_.
+     * @brief Мьютекс для защиты last_wan4_/last_wan6_.
      */
     mutable std::mutex mu_;
 
@@ -85,20 +84,21 @@ private:
     std::optional<std::string> last_wan6_;
 
     /**
-     * @brief Основная функция потока: принимает события и реагирует.
+     * @brief Точка входа рабочего потока: опрос netlink и реакция.
      */
     void ThreadMain_();
 
     /**
-     * @brief Пересчитать WAN-интерфейсы и применить NAT/MSS, если изменились.
+     * @brief Пересчитать WAN-интерфейсы и применить NAT/MSS при изменении.
      */
     void RecomputeAndApply_();
 
     /**
-     * @brief Идемпотентно применяет NAT и MSS clamp для заданных WAN-интерфейсов.
-     *        При отсутствии WAN интерфейса — соответствующая цепь очищается.
-     * @param wan4 Имя WAN для IPv4 (или nullopt).
-     * @param wan6 Имя WAN для IPv6 (или nullopt).
+     * @brief Идемпотентно применяет NAT и MSS clamp под текущие WAN.
+     *        При отсутствии WAN соответствующая цепочка очищается.
+     * @param wan4 Имя WAN для IPv4 (или std::nullopt).
+     * @param wan6 Имя WAN для IPv6 (или std::nullopt).
+     * @param p   Параметры конфигурации (MTU, CIDR источника и пр.).
      */
     static void ApplyNatAndMss_(const std::optional<std::string> &wan4,
                                 const std::optional<std::string> &wan6,

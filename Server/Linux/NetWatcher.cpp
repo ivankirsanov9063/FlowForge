@@ -1,6 +1,15 @@
-#include "NetWatcher.hpp"
+// NetWatcher.cpp — наблюдение за изменениями default route и пересборка NAT/MSS
 
+#include "NetWatcher.hpp"
 #include "Network.hpp"
+
+#include <chrono>
+#include <thread>
+#include <mutex>
+#include <optional>
+#include <string>
+#include <stdexcept>
+#include <algorithm>
 
 #include <linux/rtnetlink.h>
 #include <netlink/netlink.h>
@@ -9,19 +18,14 @@
 #include <netlink/route/route.h>
 #include <netlink/route/nexthop.h>
 
-#include <chrono>
-#include <stdexcept>
-
 namespace
 {
     // Коллбек libnl: любое валидное сообщение маршрутизации — триггер на пересборку.
-    int on_nl_valid(struct nl_msg *, void *arg)
+    int on_nl_valid(struct nl_msg *,
+                    void *arg)
     {
         auto *self = static_cast<NetWatcher *>(arg);
-        // Никакой тяжёлой работы в коллбеке — только флажок: делаем лениво в ThreadMain_.
-        // Здесь просто используем тот же механизм: ничего не делаем — recvmsgs вернётся.
-        // Реальную работу выполняем сразу после recv().
-        (void) self;
+        (void) self; // тяжёлую работу не делаем в коллбеке
         return NL_OK;
     }
 }
@@ -51,19 +55,23 @@ NetWatcher::NetWatcher(const NetConfig::Params &params)
     (void) nl_socket_add_membership(sk_, RTNLGRP_IPV4_ROUTE);
     (void) nl_socket_add_membership(sk_, RTNLGRP_IPV6_ROUTE);
 
-    // Не блокируемся навечно: неблокирующий сокет + периодический опрос
+    // Неблокирующий режим + периодический опрос
     nl_socket_set_nonblocking(sk_);
 
-    // Коллбек на валидные сообщения (нам не важно содержание — после каждого события пересчитаем WAN)
+    // Коллбек на валидные сообщения (содержание неважно — после события пересчитаем WAN)
     nl_socket_modify_cb(sk_, NL_CB_VALID, NL_CB_CUSTOM, &on_nl_valid, this);
 
     // Запускаем рабочий поток
-    th_ = std::thread([this] { ThreadMain_(); });
+    th_ = std::thread([this]
+    {
+        ThreadMain_();
+    });
 }
 
 NetWatcher::~NetWatcher()
 {
     stop_.store(true, std::memory_order_relaxed);
+
     if (th_.joinable())
     {
         th_.join();
@@ -93,6 +101,7 @@ void NetWatcher::ThreadMain_()
     RecomputeAndApply_();
 
     using namespace std::chrono_literals;
+
     while (!stop_.load(std::memory_order_relaxed))
     {
         // Считать все доступные события (не блокируясь навечно)
@@ -116,11 +125,12 @@ void NetWatcher::RecomputeAndApply_()
         std::lock_guard<std::mutex> lock(mu_);
         if (wan4 != last_wan4_ || wan6 != last_wan6_)
         {
-            changed = true;
+            changed   = true;
             last_wan4_ = wan4;
             last_wan6_ = wan6;
         }
     }
+
     if (!changed)
     {
         return;
@@ -141,9 +151,10 @@ void NetWatcher::ApplyNatAndMss_(const std::optional<std::string> &wan4,
         cmd4 += "add chain ip flowforge_nat postrouting { type nat hook postrouting priority 100 ; policy accept; }\n";
         cmd4 += "flush chain ip flowforge_nat postrouting\n";
         (void) NetConfig::nft_apply(cmd4);
+
         if (wan4 && !p.nat44_src.empty())
         {
-            (void) NetConfig::ensure_nat44(*wan4, p.nat44_src); // уже идемпотентно
+            (void) NetConfig::ensure_nat44(*wan4, p.nat44_src); // идемпотентно
         }
     }
     {
@@ -153,9 +164,10 @@ void NetWatcher::ApplyNatAndMss_(const std::optional<std::string> &wan4,
         cmd6 += "add chain ip6 flowforge_nat postrouting { type nat hook postrouting priority 100 ; policy accept; }\n";
         cmd6 += "flush chain ip6 flowforge_nat postrouting\n";
         (void) NetConfig::nft_apply(cmd6);
+
         if (wan6 && !p.nat66_src.empty())
         {
-            (void) NetConfig::ensure_nat66(*wan6, p.nat66_src); // уже идемпотентно
+            (void) NetConfig::ensure_nat66(*wan6, p.nat66_src); // идемпотентно
         }
     }
 
@@ -166,18 +178,24 @@ void NetWatcher::ApplyNatAndMss_(const std::optional<std::string> &wan4,
         mk  = "add table inet flowforge_post\n";
         mk += "add chain inet flowforge_post postrouting "
               "{ type filter hook postrouting priority -150; policy accept; }\n";
-        if (!NetConfig::nft_apply(mk)) {
+
+        if (!NetConfig::nft_apply(mk))
+        {
             // fallback: удалить и создать заново
             (void) NetConfig::nft_apply("delete table inet flowforge_post\n");
             (void) NetConfig::nft_apply(mk);
         }
+
         // Шаг 2: отдельный flush (старые nft падают, если делать всё одним батчем)
-        if (!NetConfig::nft_apply("flush chain inet flowforge_post postrouting\n")) {
+        if (!NetConfig::nft_apply("flush chain inet flowforge_post postrouting\n"))
+        {
             (void) NetConfig::nft_apply("delete table inet flowforge_post\n");
             (void) NetConfig::nft_apply(mk);
         }
-        // Шаг 3: добавляем правила (сначала современный синтаксис, затем фоллбэк)
+
+        // Шаг 3: правила (сначала современный синтаксис RT MTU, затем фоллбэк)
         std::string rules_rt;
+
         if (wan4 && !p.nat44_src.empty())
         {
             rules_rt += "add rule inet flowforge_post postrouting "
@@ -194,14 +212,17 @@ void NetWatcher::ApplyNatAndMss_(const std::optional<std::string> &wan4,
                         "tcp flags syn tcp option maxseg size set rt mtu "
                         "comment \"flowforge:mss6\"\n";
         }
+
         if (!rules_rt.empty())
         {
             if (!NetConfig::nft_apply(rules_rt))
             {
-                // Фоллбэк: фиксированное MSS из MTU (совместимо со старыми nft/ядрами)
+                // Фоллбэк: фиксированный MSS из MTU (совместимо со старыми nft/ядрами)
                 const int mss4 = std::max(536, p.mtu - 40); // IPv4: 20 IP + 20 TCP
                 const int mss6 = std::max(536, p.mtu - 60); // IPv6: 40 IP + 20 TCP
+
                 std::string rules_fix;
+
                 if (wan4 && !p.nat44_src.empty())
                 {
                     rules_fix += "add rule inet flowforge_post postrouting "
@@ -218,9 +239,9 @@ void NetWatcher::ApplyNatAndMss_(const std::optional<std::string> &wan4,
                                  "tcp flags syn tcp option maxseg size set " + std::to_string(mss6) + " "
                                  "comment \"flowforge:mss6\"\n";
                 }
+
                 (void) NetConfig::nft_apply(rules_fix);
             }
         }
-
     }
 }
