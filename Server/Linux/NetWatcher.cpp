@@ -167,21 +167,43 @@ void NetWatcher::ThreadMain_()
             stop_.store(true, std::memory_order_relaxed);
             break;
         }
+
+        static auto last_resync = std::chrono::steady_clock::now();
         if (rc > 0)
         {
             LOGT("netwatcher") << "ThreadMain: processed " << rc << " netlink message(s)";
+            try
+            {
+                LOGT("netwatcher") << "ThreadMain: recompute/apply on event";
+                RecomputeAndApply_();
+            }
+            catch (const std::exception &)
+            {
+                LOGE("netwatcher") << "ThreadMain: recompute/apply failed, stopping";
+                stop_.store(true, std::memory_order_relaxed);
+                break;
+            }
+            last_resync = std::chrono::steady_clock::now();
         }
-
-        try
+        else
         {
-            LOGT("netwatcher") << "ThreadMain: recompute/apply on event";
-            RecomputeAndApply_();
-        }
-        catch (const std::exception &)
-        {
-            LOGE("netwatcher") << "ThreadMain: recompute/apply failed, stopping";
-            stop_.store(true, std::memory_order_relaxed);
-            break;
+            // Rare periodic resync (e.g. missed event)
+            auto now = std::chrono::steady_clock::now();
+            if (now - last_resync >= std::chrono::seconds(10))
+            {
+                try
+                {
+                    LOGT("netwatcher") << "ThreadMain: periodic recompute/apply";
+                    RecomputeAndApply_();
+                }
+                catch (const std::exception &)
+                {
+                    LOGE("netwatcher") << "ThreadMain: periodic recompute/apply failed, stopping";
+                    stop_.store(true, std::memory_order_relaxed);
+                    break;
+                }
+                last_resync = now;
+            }
         }
 
         std::this_thread::sleep_for(200ms);
