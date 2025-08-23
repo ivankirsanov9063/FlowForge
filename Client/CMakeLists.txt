@@ -2,6 +2,9 @@ cmake_minimum_required(VERSION 3.20)
 
 project(Client LANGUAGES CXX)
 
+# Выравниваем ABI Boost под системные .so (в т.ч. libboost_log.so)
+add_compile_definitions(BOOST_ALL_DYN_LINK)
+
 add_executable(Client
         ${CMAKE_SYSTEM_NAME}/Client.cpp
         ${CMAKE_SYSTEM_NAME}/Network.cpp
@@ -15,25 +18,38 @@ add_executable(Client
         ${CMAKE_SOURCE_DIR}/Logger.cpp
 )
 
-if (CMAKE_SYSTEM_NAME STREQUAL "Windows")
+if (WIN32)
     target_compile_definitions(Client PRIVATE _WIN32_WINNT=0x0602 BOOST_USE_WINAPI_VERSION=0x0602)
 endif()
 
 target_compile_features(Client PRIVATE cxx_std_23)
-
 target_include_directories(Client PRIVATE ${CMAKE_SOURCE_DIR})
 
-find_package(Boost REQUIRED COMPONENTS log log_setup thread filesystem)
-target_link_libraries(Client PUBLIC Boost::log Boost::log_setup Boost::thread Boost::filesystem)
+find_package(Boost REQUIRED COMPONENTS log log_setup thread filesystem regex)
+find_package(Threads REQUIRED)
+
+# Важно: log_setup раньше log; добавляем потоки и dl (Linux)
+target_link_libraries(Client
+        PRIVATE
+        Boost::log_setup
+        Boost::log
+        Boost::thread
+        Boost::filesystem
+        Boost::regex
+        Threads::Threads
+)
 
 if (CMAKE_SYSTEM_NAME STREQUAL "Linux")
     find_package(PkgConfig REQUIRED)
     pkg_check_modules(LIBNL3 REQUIRED libnl-3.0 libnl-route-3.0)
-    target_include_directories(Client PRIVATE ${LIBNL3_INCLUDE_DIRS})
-    target_link_libraries(Client PRIVATE ${LIBNL3_LIBRARIES})
+    pkg_check_modules(LIBNFT REQUIRED libnftables)
+    pkg_check_modules(LIBSYSTEMD REQUIRED libsystemd)
+    target_compile_definitions(Client PRIVATE HAVE_LIBSYSTEMD=1)
+    target_include_directories(Client PRIVATE ${LIBNL3_INCLUDE_DIRS} ${LIBNFT_INCLUDE_DIRS} ${LIBSYSTEMD_INCLUDE_DIRS})
+    target_link_libraries(Client PRIVATE ${LIBNL3_LIBRARIES} ${LIBNFT_LIBRARIES} ${LIBSYSTEMD_LIBRARIES} dl)
 endif()
 
-if (CMAKE_SYSTEM_NAME STREQUAL "Windows")
+if (WIN32)
     target_link_libraries(Client PRIVATE Ws2_32 Iphlpapi)
 endif()
 
