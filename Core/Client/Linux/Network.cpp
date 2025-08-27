@@ -410,7 +410,16 @@ namespace
 
 namespace Network
 {
-    void ConfigureNetwork(const std::string &ifname,
+    void SetParams(const Params& p)
+    {
+        g_params = p;
+        LOGD("network") << "Params set: mtu=" << g_params.mtu
+                        << " local4=" << g_params.local4 << " peer4=" << g_params.peer4
+                        << " local6=" << g_params.local6 << " peer6=" << g_params.peer6;
+    }
+
+
+void ConfigureNetwork(const std::string &ifname,
                           const std::string &server_ip,
                           IpVersion family)
     {
@@ -422,9 +431,12 @@ namespace Network
         {
             throw std::runtime_error("IfSetUp(" + ifname + "): " + std::string(std::strerror(-rc)));
         }
-        if (int rc = IfSetMtu(ifname, 1400); rc != 0)
+        int desired_mtu = g_params.mtu > 0 ? g_params.mtu : 1400;
+        if (int rc = IfSetMtu(ifname, desired_mtu); rc != 0)
         {
-            LOGW("network") << "IfSetMtu(" << ifname << "): " << std::strerror(-rc) << " (ignored)";
+            LOGW("network") << "IfSetMtu(" << ifname << "," << desired_mtu
+                            << "): " << std::strerror(-rc) << " (ignored)";
+
         }
 
         if (family == IpVersion::V6)
@@ -444,18 +456,25 @@ namespace Network
         if (family == IpVersion::V4)
         {
             FlushAddrs(nl.sk, ifindex, AF_INET);
-            AddAddrP2P(nl.sk, ifindex, AF_INET,  "10.8.0.2", 32, "10.8.0.1");
+            try
+            {
+                AddAddrP2P(nl.sk, ifindex, AF_INET, g_params.local4, 32, g_params.peer4);
+            }
+            catch (const std::exception& e)
+            {
+                throw std::runtime_error(std::string("IPv4 address apply failed: ") + e.what());
+            }
         }
         else
         {
             FlushAddrs(nl.sk, ifindex, AF_INET6);
             try
             {
-                AddAddrP2P(nl.sk, ifindex, AF_INET6, "fd00:dead:beef::2", 128, "fd00:dead:beef::1");
+                AddAddrP2P(nl.sk, ifindex, AF_INET6, g_params.local6, 128, g_params.peer6);
             }
-            catch (const std::exception &e)
+            catch (const std::exception& e)
             {
-                LOGW("network") << "IPv6 address assign failed: " << e.what();
+                throw std::runtime_error(std::string("IPv6 address apply failed: ") + e.what());
             }
         }
 

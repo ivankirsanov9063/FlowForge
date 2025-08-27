@@ -15,6 +15,20 @@ namespace Network
         V6
     };
 
+    struct Params
+    {
+        std::string local4 = "10.8.0.2";
+        std::string peer4  = "10.8.0.1";
+        std::string local6 = "fd00:dead:beef::2";
+        std::string peer6  = "fd00:dead:beef::1";
+        int mtu = 1400;
+    };
+
+    static Params g_params{};
+
+    // Установить параметры (должно быть вызвано до ConfigureNetwork)
+    void SetParams(const Params& p);
+
     /**
      * @brief Configure per-family routing on Linux for a TUN device.
      *

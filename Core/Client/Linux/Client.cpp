@@ -69,12 +69,23 @@ int main(int argc, char **argv)
         return 1;
     }
 
-    // Defaults
+    // Defaults (синхронизированы с Windows-версией)
     std::string tun         = "cvpn0";
     std::string server_ip   = "193.233.23.221";
     int         port        = 5555;
     std::string plugin_path = "./libPlugUDP.so";
 
+    // Address plan defaults (переопределяем через CLI)
+    std::string local4 = "10.8.0.2";
+    std::string peer4  = "10.8.0.1";
+    std::string local6 = "fd00:dead:beef::2";
+    std::string peer6  = "fd00:dead:beef::1";
+    int mtu = 1400;
+    // DNS по умолчанию; если указать --dns, список заменится/расширится
+    std::vector<std::string> dns_cli = {"10.8.0.1", "1.1.1.1"};
+    bool dns_overridden = false;
+
+    LOGD("client") << "Parsing CLI arguments";
     // CLI
     for (int i = 1; i < argc; ++i)
     {
@@ -83,10 +94,44 @@ int main(int argc, char **argv)
         else if (a == "--server" && i + 1 < argc) { server_ip   = argv[++i]; }
         else if (a == "--port"   && i + 1 < argc) { port        = std::stoi(argv[++i]); }
         else if (a == "--plugin" && i + 1 < argc) { plugin_path = argv[++i]; }
+        else if (a == "--local4" && i + 1 < argc) { local4      = argv[++i]; }
+        else if (a == "--peer4"  && i + 1 < argc) { peer4       = argv[++i]; }
+        else if (a == "--local6" && i + 1 < argc) { local6      = argv[++i]; }
+        else if (a == "--peer6"  && i + 1 < argc) { peer6       = argv[++i]; }
+        else if (a == "--mtu"    && i + 1 < argc) { mtu         = std::stoi(argv[++i]); }
+        else if (a == "--dns"    && i + 1 < argc)
+        {
+            std::string v = argv[++i];
+            if (!dns_overridden)
+            {
+                dns_cli.clear();
+                dns_overridden = true;
+            }
+            // split by comma; обрежем крайние пробелы
+            size_t start = 0;
+            while (start < v.size())
+            {
+                size_t pos = v.find(',', start);
+                std::string tok = (pos == std::string::npos) ? v.substr(start) : v.substr(start, pos - start);
+                // trim
+                size_t b = tok.find_first_not_of(" \t");
+                size_t e = tok.find_last_not_of(" \t");
+                if (b != std::string::npos)
+                {
+                    dns_cli.emplace_back(tok.substr(b, e - b + 1));
+                }
+                if (pos == std::string::npos) break;
+                start = pos + 1;
+            }
+        }
         else if (a == "-h" || a == "--help")
         {
-            LOGI("client") << "Usage: " << argv[0]
-                      << " --server <ip|[ipv6]> [--port 5555] [--tun cvpn0] [--plugin ./libPlugUDP.so]\n";
+                LOGI("client") << "Usage: " << argv[0]
+                    << " --server <ip|[ipv6]> [--port 5555] [--tun cvpn0] "
+                    << "[--plugin ./libPlugUDP.so] "
+                    << "[--local4 A.B.C.D] [--peer4 A.B.C.D] "
+                    << "[--local6 ::addr] [--peer6 ::addr] "
+                    << "[--mtu 1400] [--dns ip[,ip...]]";
             return 0;
         }
     }
@@ -96,6 +141,18 @@ int main(int argc, char **argv)
         LOGE("client") << "--server is required";
         return 1;
     }
+
+    // Прокидываем адресный план/MTU в сетевой модуль до конфигурации
+    {
+        Network::Params np;
+        np.local4 = local4;
+        np.peer4 = peer4;
+        np.local6 = local6;
+        np.peer6 = peer6;
+        np.mtu = mtu;
+        Network::SetParams(np);
+    }
+
 
     server_ip = StripBrackets(server_ip);
     if (!IsIpLiteral(server_ip))
@@ -136,6 +193,22 @@ int main(int argc, char **argv)
     int fl = fcntl(tun_fd, F_GETFL, 0);
     if (fl >= 0) { fcntl(tun_fd, F_SETFL, fl | O_NONBLOCK); }
     LOGI("tun") << "Up: " << tun;
+
+    // DNS: применяем выбранные серверы на интерфейсе TUN (RAII)
+    DNS::Params dns_p;
+    dns_p.ifname  = tun;
+    dns_p.servers = dns_cli;
+    DNS dns(dns_p);
+    try
+    {
+        dns.Apply();
+        LOGI("dns") << "DNS applied for " << tun;
+    }
+    catch (const std::exception &e)
+    {
+        LOGW("dns") << "DNS apply failed: " << e.what();
+    }
+
 
     // Firewall: разрешаем только lo, TUN и сервер:порт.
     FirewallRules::Params fw_p;
@@ -179,17 +252,6 @@ int main(int argc, char **argv)
         PluginWrapper::Unload(plugin);
         return 1;
     }
-
-
-    DNS::Params dns_p;
-    dns_p.ifname            = tun;
-    dns_p.servers           = { "10.8.0.1" }; // или свой DNS сервера
-    dns_p.use_systemd       = true;           // сначала пробуем resolved
-    dns_p.make_default_route= true;           // "~." через resolved
-    dns_p.resolv_conf_fallback = true;        // разрешить КРАЙНИЙ fallback (безопасно)
-    DNS dns(dns_p);
-    dns.Apply();
-
 
     // NetWatcher: пересобираем маршруты при изменениях в системе
     auto reapply = [&]()
