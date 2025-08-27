@@ -1,5 +1,5 @@
 #include "NetWatcher.hpp"
-#include "Logger.hpp"
+#include "Core/Logger.hpp"
 
 #include <thread>
 #include <poll.h>

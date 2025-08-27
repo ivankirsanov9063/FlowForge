@@ -21,7 +21,7 @@
 #include <stdexcept>
 
 #include "DNS.hpp"
-#include "Logger.hpp"
+#include "Core/Logger.hpp"
 
 #pragma comment(lib, "Ws2_32.lib")
 #pragma comment(lib, "iphlpapi.lib")

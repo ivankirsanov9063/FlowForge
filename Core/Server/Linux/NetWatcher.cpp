@@ -2,7 +2,7 @@
 
 #include "NetWatcher.hpp"
 #include "Network.hpp"
-#include "Logger.hpp"
+#include "Core/Logger.hpp"
 
 #include <chrono>
 #include <thread>

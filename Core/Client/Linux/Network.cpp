@@ -1,5 +1,5 @@
 #include "Network.hpp"
-#include "Logger.hpp"
+#include "Core/Logger.hpp"
 
 #include <arpa/inet.h>
 #include <errno.h>

@@ -1,5 +1,5 @@
 #include "FirewallRules.hpp"
-#include "Logger.hpp"
+#include "Core/Logger.hpp"
 #include <stdexcept>
 #include <cstring>
 #include <nftables/libnftables.h>
@@ -91,6 +91,8 @@ void FirewallRules::Apply()
     // base allow
     RunCmd_("add rule inet " + p_.table_name + " " + p_.chain_name + " ct state established,related accept");
     RunCmd_("add rule inet " + p_.table_name + " " + p_.chain_name + " oifname \"lo\" accept");
+    // clamp MSS for TCP SYN по PMTU на выходе в TUN
+    RunCmd_("add rule inet " + p_.table_name + " " + p_.chain_name + " oifname \"" + p_.tun_ifname + "\" tcp flags syn tcp option maxseg size set rt mtu");
     RunCmd_("add rule inet " + p_.table_name + " " + p_.chain_name + " oifname \"" + p_.tun_ifname + "\" accept");
     if (p_.allow_icmp) {
         RunCmd_("add rule inet " + p_.table_name + " " + p_.chain_name + " ip protocol icmp accept");
@@ -99,6 +101,8 @@ void FirewallRules::Apply()
     // base allow (FORWARD): TUN <-> WAN
     RunCmd_("add rule inet " + p_.table_name + " fw ct state established,related accept");
     RunCmd_("add rule inet " + p_.table_name + " fw iifname \"" + p_.tun_ifname + "\" accept"); // внутрь -> наружу
+    // clamp MSS на трафик, уходящий из хоста в TUN (форвардные кейсы)
+    RunCmd_("add rule inet " + p_.table_name + " fw oifname \"" + p_.tun_ifname + "\" tcp flags syn tcp option maxseg size set rt mtu");
     RunCmd_("add rule inet " + p_.table_name + " fw oifname \"" + p_.tun_ifname + "\" accept"); // наружу -> внутрь
 
     // сервер

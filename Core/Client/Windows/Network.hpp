@@ -22,7 +22,7 @@
 #include <string>
 #include <stdexcept>
 
-#include "TUN.hpp"
+#include "Core/TUN.hpp"
 
 namespace Network
 {

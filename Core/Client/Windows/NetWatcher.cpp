@@ -17,7 +17,7 @@
 #pragma comment(lib, "iphlpapi.lib")
 
 #include "NetWatcher.hpp"
-#include "Logger.hpp"
+#include "Core/Logger.hpp"
 
 #include <cassert>
 #include <utility>

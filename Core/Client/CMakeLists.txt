@@ -13,9 +13,9 @@ add_executable(Client
         ${CMAKE_SYSTEM_NAME}/DNS.cpp
         ${CMAKE_SYSTEM_NAME}/NetworkRollback.cpp
 
-        ${CMAKE_SOURCE_DIR}/PluginWrapper.cpp
-        ${CMAKE_SOURCE_DIR}/TUN.cpp
-        ${CMAKE_SOURCE_DIR}/Logger.cpp
+        ${CMAKE_SOURCE_DIR}/Core/PluginWrapper.cpp
+        ${CMAKE_SOURCE_DIR}/Core/TUN.cpp
+        ${CMAKE_SOURCE_DIR}/Core/Logger.cpp
 )
 
 if (WIN32)

@@ -3,9 +3,9 @@ add_executable(Server
         ${CMAKE_SYSTEM_NAME}/Network.cpp
         ${CMAKE_SYSTEM_NAME}/NetworkRollback.cpp
         ${CMAKE_SYSTEM_NAME}/NetWatcher.cpp
-        ${CMAKE_SOURCE_DIR}/PluginWrapper.cpp
-        ${CMAKE_SOURCE_DIR}/TUN.cpp
-        ${CMAKE_SOURCE_DIR}/Logger.cpp
+        ${CMAKE_SOURCE_DIR}/Core/PluginWrapper.cpp
+        ${CMAKE_SOURCE_DIR}/Core/TUN.cpp
+        ${CMAKE_SOURCE_DIR}/Core/Logger.cpp
 )
 
 target_compile_features(Server PRIVATE cxx_std_23)

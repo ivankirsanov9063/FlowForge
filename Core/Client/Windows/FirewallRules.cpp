@@ -18,7 +18,7 @@
 #include <utility>
 
 #include "FirewallRules.hpp"
-#include "Logger.hpp"
+#include "Core/Logger.hpp"
 
 #pragma comment(lib, "ole32.lib")
 #pragma comment(lib, "oleaut32.lib")

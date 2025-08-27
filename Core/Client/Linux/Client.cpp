@@ -1,9 +1,9 @@
 // Client.cpp — Linux версия с поддержкой NetWatcher и FirewallRules (libnftables)
 // Без внешних утилит; логирование через Boost.Log макросы LOG*.
 
-#include "Logger.hpp"
-#include "PluginWrapper.hpp"
-#include "TUN.hpp"
+#include "Core/Logger.hpp"
+#include "Core/PluginWrapper.hpp"
+#include "Core/TUN.hpp"
 #include "Network.hpp"
 #include "NetWatcher.hpp"
 #include "FirewallRules.hpp"

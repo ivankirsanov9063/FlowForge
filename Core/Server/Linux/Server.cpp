@@ -1,11 +1,11 @@
 // Server.cpp — серверная часть: TUN, NAT/MSS, плагин транспорта
 
-#include "PluginWrapper.hpp"
-#include "TUN.hpp"
+#include "Core/PluginWrapper.hpp"
+#include "Core/TUN.hpp"
 #include "Network.hpp"
 #include "NetworkRollback.hpp"
 #include "NetWatcher.hpp"
-#include "Logger.hpp"
+#include "Core/Logger.hpp"
 
 #include <csignal>
 #include <fcntl.h>
