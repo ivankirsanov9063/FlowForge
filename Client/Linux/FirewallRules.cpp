@@ -74,7 +74,6 @@ void FirewallRules::Apply()
     LOGI("firewall") << "Apply: table="<<p_.table_name<<" chain="<<p_.chain_name
                      << " tun="<<p_.tun_ifname<<" wan="<<(wan.empty()?"-":wan)
                      << " server="<<ip<<":"<<p_.server_port
-                     << " ks="<<(p_.enable_killswitch?"1":"0")
                      << " dhcp="<<(p_.allow_dhcp?"1":"0")
                      << " icmp="<<(p_.allow_icmp?"1":"0");
 
@@ -115,16 +114,6 @@ void FirewallRules::Apply()
     if (!wan.empty()) {
         if (p_.allow_dhcp) {
             RunCmd_("add rule inet " + p_.table_name + " " + p_.chain_name + " oifname \"" + wan + "\" udp sport 68 udp dport 67 accept");
-        }
-
-        // Kill-switch включаем только если явно попросили
-        // Kill-switch: отключаем только "не-туннельный" выход в WAN
-        if (p_.enable_killswitch) {
-            // Разрешения выше: (OUTPUT) сервер VPN, (FORWARD) iif/oif = TUN
-                    RunCmd_("add rule inet " + p_.table_name + " " + p_.chain_name + " oifname \"" + wan + "\" counter drop");
-            RunCmd_("add rule inet " + p_.table_name + " fw iifname != \"" + p_.tun_ifname + "\" oifname \"" + wan + "\" counter drop");
-        } else {
-            LOGW("firewall") << "Killswitch disabled (no WAN drop rule)";
         }
     } else {
         LOGW("firewall") << "WAN interface not detected; no WAN-specific rules installed";

@@ -19,9 +19,6 @@ public:
         // Bootstrap исключения
         bool allow_dhcp          = true;     // oif "<wan>" udp 68->67
         bool allow_icmp          = true;     // icmp/icmpv6
-
-        // Новый флаг: финальный drop на WAN
-        bool enable_killswitch   = false;    // <<< ВЫКЛ. по умолчанию
     };
 
 public:

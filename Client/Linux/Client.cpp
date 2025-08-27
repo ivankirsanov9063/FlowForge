@@ -74,7 +74,6 @@ int main(int argc, char **argv)
     std::string server_ip   = "193.233.23.221";
     int         port        = 5555;
     std::string plugin_path = "./libPlugUDP.so";
-    bool kill_switcher = false; // Убрать в true потом
 
     // CLI
     for (int i = 1; i < argc; ++i)
@@ -84,11 +83,10 @@ int main(int argc, char **argv)
         else if (a == "--server" && i + 1 < argc) { server_ip   = argv[++i]; }
         else if (a == "--port"   && i + 1 < argc) { port        = std::stoi(argv[++i]); }
         else if (a == "--plugin" && i + 1 < argc) { plugin_path = argv[++i]; }
-        else if (a == "--no-kill-switcher" && i + 1 < argc) { kill_switcher = false; }
         else if (a == "-h" || a == "--help")
         {
             LOGI("client") << "Usage: " << argv[0]
-                      << " --server <ip|[ipv6]> [--port 5555] [--tun cvpn0] [--plugin ./libPlugUDP.so] [--no-kill-switcher]\n";
+                      << " --server <ip|[ipv6]> [--port 5555] [--tun cvpn0] [--plugin ./libPlugUDP.so]\n";
             return 0;
         }
     }
@@ -139,7 +137,7 @@ int main(int argc, char **argv)
     if (fl >= 0) { fcntl(tun_fd, F_SETFL, fl | O_NONBLOCK); }
     LOGI("tun") << "Up: " << tun;
 
-    // Firewall (kill-switch): разрешаем только lo, TUN и сервер:порт.
+    // Firewall: разрешаем только lo, TUN и сервер:порт.
     FirewallRules::Params fw_p;
     fw_p.tun_ifname    = tun;
     fw_p.server_ip     = server_ip;
@@ -151,9 +149,6 @@ int main(int argc, char **argv)
     fw_p.allow_dhcp          = true;
     fw_p.allow_icmp          = true;
 
-    // ВАЖНО: временно отключаем финальный drop на WAN
-    fw_p.enable_killswitch   = kill_switcher; // включим позднее, когда отладим
-
     FirewallRules fw(fw_p);
     try
     {
@@ -162,7 +157,6 @@ int main(int argc, char **argv)
     catch (const std::exception &e)
     {
         LOGE("firewall") << "Apply failed: " << e.what();
-        // Продолжаем без kill-switch, но предупреждаем
     }
 
     // Network configure (best-effort both families)
@@ -181,12 +175,11 @@ int main(int argc, char **argv)
 
     if (!ConfigureOnce())
     {
-        // снимем фаервол перед выходом
-        try { fw.Revert(); } catch (...) {}
         ::close(tun_fd);
         PluginWrapper::Unload(plugin);
         return 1;
     }
+
 
     DNS::Params dns_p;
     dns_p.ifname            = tun;
@@ -256,9 +249,6 @@ int main(int argc, char **argv)
 
     PluginWrapper::Client_Disconnect(plugin);
     watcher.Stop();
-
-    // Снимем фаервол перед выходом
-    try { fw.Revert(); } catch (...) {}
 
     ::close(tun_fd);
     PluginWrapper::Unload(plugin);
