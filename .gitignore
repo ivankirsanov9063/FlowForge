@@ -1,0 +1,41 @@
+# Компилятор и сборка
+/build/
+bin/
+*.o
+*.obj
+*.exe
+*.out
+*.dll
+*.so
+*.dylib
+*.a
+*.lib
+*.gcda
+*.gcno
+
+# Временные файлы IDE и редакторов
+# Visual Studio
+.vs/
+*.suo
+*.user
+*.userossc
+*.sdf
+*.cache
+*.VC.db
+
+# CLion / JetBrains
+.idea/
+*.iml
+
+# VSCode
+.vscode/
+
+# Макросы и настройка проекта
+CMakeFiles/
+CMakeCache.txt
+cmake-build-*/
+
+# Логи, временные файлы
+*.log
+*.tmp
+*.temp
