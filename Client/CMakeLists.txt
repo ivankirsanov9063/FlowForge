@@ -12,7 +12,6 @@ add_executable(Client
         ${CMAKE_SYSTEM_NAME}/NetWatcher.cpp
         ${CMAKE_SYSTEM_NAME}/DNS.cpp
         ${CMAKE_SYSTEM_NAME}/NetworkRollback.cpp
-        ${CMAKE_SYSTEM_NAME}/Container.cpp
 
         ${CMAKE_SOURCE_DIR}/PluginWrapper.cpp
         ${CMAKE_SOURCE_DIR}/TUN.cpp

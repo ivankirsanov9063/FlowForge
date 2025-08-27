@@ -9,7 +9,6 @@
 #include "FirewallRules.hpp"
 #include "DNS.hpp"
 #include "NetworkRollback.hpp"
-#include "Container.hpp"
 
 #include <csignal>
 #include <cstdint>
@@ -178,18 +177,15 @@ int main(int argc, char **argv)
         return 1;
     }
 
-    bool in_container = Container::IsRunningInContainer();
-    if (!in_container)
-    {
-        DNS::Params dns_p;
-        dns_p.ifname            = tun;
-        dns_p.servers           = { "10.8.0.1" }; // или свой DNS сервера
-        dns_p.use_systemd       = true;           // сначала пробуем resolved
-        dns_p.make_default_route= true;           // "~." через resolved
-        dns_p.resolv_conf_fallback = true;        // разрешить КРАЙНИЙ fallback (безопасно)
-        DNS dns(dns_p);
-        dns.Apply();
-    }
+    DNS::Params dns_p;
+    dns_p.ifname            = tun;
+    dns_p.servers           = { "10.8.0.1" }; // или свой DNS сервера
+    dns_p.use_systemd       = true;           // сначала пробуем resolved
+    dns_p.make_default_route= true;           // "~." через resolved
+    dns_p.resolv_conf_fallback = true;        // разрешить КРАЙНИЙ fallback (безопасно)
+    DNS dns(dns_p);
+    dns.Apply();
+
 
     // NetWatcher: пересобираем маршруты при изменениях в системе
     auto reapply = [&]()
