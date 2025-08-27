@@ -144,6 +144,9 @@ int main(int argc, char **argv)
     // ВАЖНО: временно отключаем финальный drop на WAN
     fw_p.enable_killswitch   = kill_switcher; // включим позднее, когда отладим
 
+    bool in_container = Container::IsRunningInContainer();
+    fw_p.in_container = in_container;
+
     FirewallRules fw(fw_p);
     try
     {
@@ -178,7 +181,6 @@ int main(int argc, char **argv)
         return 1;
     }
 
-    bool in_container = Container::IsRunningInContainer();
     if (!in_container)
     {
         DNS::Params dns_p;
