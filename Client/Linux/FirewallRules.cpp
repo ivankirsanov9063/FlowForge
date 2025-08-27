@@ -114,6 +114,10 @@ void FirewallRules::Apply()
     if (!wan.empty()) {
         if (p_.allow_dhcp) {
             RunCmd_("add rule inet " + p_.table_name + " " + p_.chain_name + " oifname \"" + wan + "\" udp sport 68 udp dport 67 accept");
+            // DHCPv6: client -> server (link-local multicast ff02::1:2)
+            RunCmd_("add rule inet " + p_.table_name + " " + p_.chain_name + " oifname \"" + wan + "\" meta l4proto udp udp sport 546 udp dport 547 ip6 daddr ff02::1:2 accept");
+            // DHCPv6: server -> client
+            RunCmd_("add rule inet " + p_.table_name + " " + p_.chain_name + " iifname \"" + wan + "\" meta l4proto udp udp sport 547 udp dport 546 accept");
         }
     } else {
         LOGW("firewall") << "WAN interface not detected; no WAN-specific rules installed";

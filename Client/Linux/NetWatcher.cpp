@@ -47,8 +47,9 @@ namespace
 
 NetWatcher::NetWatcher(ReapplyFn reapply, std::chrono::milliseconds debounce)
         : reapply_(std::move(reapply))
-        , debounce_(debounce.count() > 0 ? debounce : std::chrono::milliseconds(1000))
+        , debounce_(debounce.count() > 0 ? debounce : std::chrono::milliseconds(2000))
 {
+    next_earliest_apply_ = std::chrono::steady_clock::now();
     Start_();
 }
 
@@ -171,24 +172,26 @@ void NetWatcher::Start_()
 
                                       if (pfds[1].revents & POLLIN)
                                       {
-                                          // Коалесцируем события: ждём ещё debounce, собирая дополнительные "kick"
+                                          // собираем "kick", время последнего события и помечаем pending
                                           DrainEventFd(kick_fd_);
 
-                                          const auto start = std::chrono::steady_clock::now();
-                                          while (true)
-                                          {
-                                              if (st.stop_requested()) { stop_now = true; break; }
+                                          kick_pending_.store(true, std::memory_order_relaxed);
+                                          auto last_event = std::chrono::steady_clock::now();
 
-                                              const auto elapsed = std::chrono::steady_clock::now() - start;
+                                          // 1) дебаунс: ждём ещё события до окна debounce_
+                                          while (!st.stop_requested())
+                                          {
+                                              const auto elapsed = std::chrono::steady_clock::now() - last_event;
                                               if (elapsed >= debounce_) break;
 
                                               const int timeout_ms = static_cast<int>(
-                                                      std::chrono::duration_cast<std::chrono::milliseconds>(debounce_ - elapsed).count()
+                                                      std::chrono::duration_cast<std::chrono::milliseconds>(
+                                                              debounce_ - elapsed).count()
                                               );
 
                                               pollfd p2[2] = {
-                                                      { stop_fd_, POLLIN, 0 },
-                                                      { kick_fd_, POLLIN, 0 }
+                                                      {stop_fd_, POLLIN, 0},
+                                                      {kick_fd_, POLLIN, 0}
                                               };
                                               int rc3 = ::poll(p2, 2, timeout_ms);
                                               if (rc3 < 0)
@@ -206,15 +209,64 @@ void NetWatcher::Start_()
                                               }
                                               if (p2[1].revents & POLLIN)
                                               {
-                                                  // ещё один kick — сливаем и продолжаем ждать до истечения окна
+                                                  // ещё один kick — коалесцируем
                                                   DrainEventFd(kick_fd_);
+                                                  kick_pending_.store(true, std::memory_order_relaxed);
+                                                  last_event = std::chrono::steady_clock::now();
                                                   continue;
                                               }
-                                              // timeout без событий — выходим
-                                              if (rc3 == 0) break;
+
+                                              if (rc3 == 0) break; // тишина до конца окна
                                           }
 
                                           if (stop_now) break;
+
+                                          // 2) если ранний backoff активен — ждём его окончания, параллельно коалесцируя события
+                                          while (!st.stop_requested())
+                                          {
+                                              auto now = std::chrono::steady_clock::now();
+                                              if (now >= next_earliest_apply_) break;
+
+                                              auto to_wait = std::chrono::duration_cast<std::chrono::milliseconds>(
+                                                      next_earliest_apply_ - now).count();
+                                              if (to_wait <= 0) break;
+
+                                              pollfd p2[2] = {
+                                                      {stop_fd_, POLLIN, 0},
+                                                      {kick_fd_, POLLIN, 0}
+                                              };
+                                              int rc4 = ::poll(p2, 2, (int) to_wait);
+                                              if (rc4 < 0)
+                                              {
+                                                  if (errno == EINTR) continue;
+                                                  LOGE("netwatcher") << "poll(backoff) failed";
+                                                  break;
+                                              }
+                                              if (p2[0].revents & POLLIN)
+                                              {
+                                                  DrainEventFd(stop_fd_);
+                                                  stop_now = true;
+                                                  break;
+                                              }
+                                              if (p2[1].revents & POLLIN)
+                                              {
+                                                  DrainEventFd(kick_fd_);
+                                                  kick_pending_.store(true, std::memory_order_relaxed);
+                                                  // не двигаем next_earliest_apply_, просто продолжаем ждать
+                                              }
+                                              if (rc4 == 0) break; // backoff истёк
+                                          }
+                                          if (stop_now) break;
+
+                                          // 3) один reapply, не реэнтерабельно
+                                          if (apply_in_progress_.exchange(true, std::memory_order_acq_rel))
+                                          {
+                                              // уже идёт — ничего не делаем, события склеены флагом kick_pending_
+                                              continue;
+                                          }
+
+                                          bool success = true;
+                                          bool had_pending_after = false;
 
                                           try
                                           {
@@ -222,14 +274,39 @@ void NetWatcher::Start_()
                                               reapply_();
                                               LOGI("netwatcher") << "Reapply end";
                                           }
-                                          catch (const std::exception& e)
+                                          catch (const std::exception &e)
                                           {
                                               LOGE("netwatcher") << "Reapply exception: " << e.what();
+                                              success = false;
                                           }
                                           catch (...)
                                           {
                                               LOGE("netwatcher") << "Reapply unknown exception";
+                                              success = false;
                                           }
+                                          // во время reapply могли прийти новые события — сливаем и фиксируем флаг
+                                          DrainEventFd(kick_fd_);
+                                          had_pending_after = kick_pending_.exchange(false, std::memory_order_acq_rel);
+                                          apply_in_progress_.store(false, std::memory_order_release);
+
+                                          // 4) обновляем backoff
+                                          if (!success || had_pending_after)
+                                          {
+                                              // удвоение до max
+                                              auto next = backoff_cur_ * 2;
+                                              if (next > backoff_max_) next = backoff_max_;
+                                              backoff_cur_ = next;
+                                          }
+                                          else {
+                                              // плавный спад к min
+                                              if (backoff_cur_ > backoff_min_)
+                                              {
+                                                  backoff_cur_ = std::chrono::milliseconds(
+                                                          backoff_cur_.count() * 2 / 3);
+                                                  if (backoff_cur_ < backoff_min_) backoff_cur_ = backoff_min_;
+                                              }
+                                          }
+                                          next_earliest_apply_ = std::chrono::steady_clock::now() + backoff_cur_;
                                       }
                                   }
 

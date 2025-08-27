@@ -14,7 +14,7 @@ public:
     using ReapplyFn = std::function<void()>;
 
     explicit NetWatcher(ReapplyFn reapply,
-                        std::chrono::milliseconds debounce = std::chrono::milliseconds(1000));
+                        std::chrono::milliseconds debounce = std::chrono::milliseconds(2000));
 
     ~NetWatcher();
 
@@ -42,6 +42,13 @@ private:
     // public контракт
     ReapplyFn reapply_;
     std::chrono::milliseconds debounce_;
+    // backoff & state
+    std::chrono::milliseconds backoff_min_{std::chrono::milliseconds(2000)};
+    std::chrono::milliseconds backoff_max_{std::chrono::milliseconds(15000)};
+    std::chrono::milliseconds backoff_cur_{backoff_min_};
+    std::chrono::steady_clock::time_point next_earliest_apply_{};
+    std::atomic<bool> apply_in_progress_{false};
+    std::atomic<bool> kick_pending_{false};
 
     // платформа (Linux)
     struct nl_sock* nl_sock_ = nullptr;
