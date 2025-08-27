@@ -6,6 +6,7 @@
 #include <functional>
 #include <chrono>
 #include <thread>
+#include <stop_token>
 
 class NetWatcher
 {
@@ -34,7 +35,7 @@ public:
 private:
     void Start_();
     void Shutdown_();
-    void ThreadLoop_();
+    void ThreadLoop_(std::stop_token st);
     void SignalEventFd_(int fd);
 
 private:
@@ -47,6 +48,5 @@ private:
     int nl_fd_   = -1;
     int stop_fd_ = -1;
     int kick_fd_ = -1;
-    bool running_ = false;
-    class std::thread* thread_ = nullptr;
+    std::jthread thread_;
 };

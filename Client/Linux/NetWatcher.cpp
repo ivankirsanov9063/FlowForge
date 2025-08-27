@@ -7,6 +7,7 @@
 #include <unistd.h>
 #include <errno.h>
 #include <cstring>
+#include <stop_token>
 
 #include <netlink/netlink.h>
 #include <netlink/socket.h>
@@ -58,7 +59,7 @@ NetWatcher::~NetWatcher()
 
 bool NetWatcher::IsRunning() const
 {
-    return running_;
+    return thread_.joinable();
 }
 
 void NetWatcher::SignalEventFd_(int fd)
@@ -80,7 +81,7 @@ void NetWatcher::Stop()
 
 void NetWatcher::Start_()
 {
-    if (running_) return;
+    if (thread_.joinable()) return;
 
     stop_fd_ = ::eventfd(0, EFD_NONBLOCK | EFD_CLOEXEC);
     kick_fd_ = ::eventfd(0, EFD_NONBLOCK | EFD_CLOEXEC);
@@ -134,15 +135,15 @@ void NetWatcher::Start_()
     nl_socket_set_nonblocking(nl_sock_);
     nl_fd_ = nl_socket_get_fd(nl_sock_);
 
-    running_ = true;
-
-    thread_ = new std::thread([this]()
-                              {
+    thread_ = std::jthread([this](std::stop_token st)
+                           {
                                   LOGI("netwatcher") << "Thread started";
                                   pollfd pfds[3]{};
+                                  bool stop_now = false;
 
-                                  while (running_)
+                                  while (true)
                                   {
+                                      if (st.stop_requested()) { stop_now = true; break; }
                                       pfds[0] = { stop_fd_, POLLIN, 0 };
                                       pfds[1] = { kick_fd_, POLLIN, 0 };
                                       pfds[2] = { nl_fd_,   POLLIN, 0 };
@@ -174,8 +175,10 @@ void NetWatcher::Start_()
                                           DrainEventFd(kick_fd_);
 
                                           const auto start = std::chrono::steady_clock::now();
-                                          while (running_)
+                                          while (true)
                                           {
+                                              if (st.stop_requested()) { stop_now = true; break; }
+
                                               const auto elapsed = std::chrono::steady_clock::now() - start;
                                               if (elapsed >= debounce_) break;
 
@@ -198,7 +201,7 @@ void NetWatcher::Start_()
                                               {
                                                   DrainEventFd(stop_fd_);
                                                   LOGD("netwatcher") << "Stop during debounce";
-                                                  running_ = false;
+                                                  stop_now = true;
                                                   break;
                                               }
                                               if (p2[1].revents & POLLIN)
@@ -211,7 +214,7 @@ void NetWatcher::Start_()
                                               if (rc3 == 0) break;
                                           }
 
-                                          if (!running_) break;
+                                          if (stop_now) break;
 
                                           try
                                           {
@@ -238,14 +241,8 @@ void NetWatcher::Start_()
 
 void NetWatcher::Shutdown_()
 {
-    if (!running_)
+    if (!thread_.joinable())
     {
-        // убедимся, что ресурсы точно закрыты
-        if (thread_ != nullptr)
-        {
-            delete thread_;
-            thread_ = nullptr;
-        }
         if (nl_sock_ != nullptr)
         {
             nl_close(nl_sock_);
@@ -258,14 +255,11 @@ void NetWatcher::Shutdown_()
         return;
     }
 
-    running_ = false;
-    SignalEventFd_(stop_fd_);
-
-    if (thread_ != nullptr)
+    if (thread_.joinable())
     {
-        if (thread_->joinable()) { thread_->join(); }
-        delete thread_;
-        thread_ = nullptr;
+        thread_.request_stop();
+        SignalEventFd_(stop_fd_);
+        thread_.join();
     }
 
     if (nl_sock_ != nullptr)

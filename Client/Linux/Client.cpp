@@ -18,6 +18,7 @@
 #include <fcntl.h>
 #include <unistd.h>
 #include <sys/types.h>
+#include <arpa/inet.h>
 #include <sys/stat.h>
 
 static volatile sig_atomic_t g_working = 1;
@@ -39,6 +40,15 @@ static std::string StripBrackets(const std::string &s)
         return s.substr(1, s.size() - 2);
     }
     return s;
+}
+
+static bool IsIpLiteral(const std::string &s)
+{
+    std::string x = StripBrackets(s);
+    in_addr a4{};
+    in6_addr a6{};
+    return ::inet_pton(AF_INET, x.c_str(), &a4) == 1
+           || ::inet_pton(AF_INET6, x.c_str(), &a6) == 1;
 }
 
 int main(int argc, char **argv)
@@ -90,6 +100,11 @@ int main(int argc, char **argv)
     }
 
     server_ip = StripBrackets(server_ip);
+    if (!IsIpLiteral(server_ip))
+    {
+        LOGE("client") << "--server must be an IP literal for beta (no WAN-DNS bootstrap). Use IPv4 or [IPv6].";
+        return 1;
+    }
     LOGD("client") << "Server: " << server_ip << " port=" << port << " tun=" << tun;
 
     NetworkRollback::Params rbp;
@@ -125,8 +140,6 @@ int main(int argc, char **argv)
     LOGI("tun") << "Up: " << tun;
 
     // Firewall (kill-switch): разрешаем только lo, TUN и сервер:порт.
-// Временно включаем bootstrap-правила, чтобы DNS/DHCP на WAN работали,
-// пока не внедрим DNS через туннель.
     FirewallRules::Params fw_p;
     fw_p.tun_ifname    = tun;
     fw_p.server_ip     = server_ip;
@@ -135,8 +148,6 @@ int main(int argc, char **argv)
     fw_p.allow_tcp     = true;
     fw_p.hook_priority = 0;
 
-// bootstrap
-    fw_p.allow_dns_bootstrap = true;
     fw_p.allow_dhcp          = true;
     fw_p.allow_icmp          = true;
 

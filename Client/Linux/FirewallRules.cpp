@@ -75,7 +75,6 @@ void FirewallRules::Apply()
                      << " tun="<<p_.tun_ifname<<" wan="<<(wan.empty()?"-":wan)
                      << " server="<<ip<<":"<<p_.server_port
                      << " ks="<<(p_.enable_killswitch?"1":"0")
-                     << " dns="<<(p_.allow_dns_bootstrap?"1":"0")
                      << " dhcp="<<(p_.allow_dhcp?"1":"0")
                      << " icmp="<<(p_.allow_icmp?"1":"0");
 
@@ -114,10 +113,6 @@ void FirewallRules::Apply()
 
     // bootstrap на WAN (если нашли)
     if (!wan.empty()) {
-        if (p_.allow_dns_bootstrap) {
-            RunCmd_("add rule inet " + p_.table_name + " " + p_.chain_name + " oifname \"" + wan + "\" udp dport 53 accept");
-            RunCmd_("add rule inet " + p_.table_name + " " + p_.chain_name + " oifname \"" + wan + "\" tcp dport 53 accept");
-        }
         if (p_.allow_dhcp) {
             RunCmd_("add rule inet " + p_.table_name + " " + p_.chain_name + " oifname \"" + wan + "\" udp sport 68 udp dport 67 accept");
         }

@@ -17,7 +17,6 @@ public:
         int  hook_priority = 0;
 
         // Bootstrap исключения
-        bool allow_dns_bootstrap = true;     // oif "<wan>" udp/tcp dport 53
         bool allow_dhcp          = true;     // oif "<wan>" udp 68->67
         bool allow_icmp          = true;     // icmp/icmpv6
 
