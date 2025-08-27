@@ -8,8 +8,6 @@
 #include <netlink/route/route.h>
 #include <netlink/route/link.h>
 #include <net/if.h>
-#include <fstream>
-#include <arpa/inet.h>
 
 namespace {
     struct NlSock {
@@ -67,53 +65,6 @@ void FirewallRules::CreateCtx_(){ ctx_=nft_ctx_new(NFT_CTX_DEFAULT); if(!ctx_) t
 void FirewallRules::DestroyCtx_(){ if(ctx_){ nft_ctx_free(ctx_); ctx_=nullptr; } }
 bool FirewallRules::RunCmd_(const std::string &cmd, bool ignore_error){ int rc=nft_run_cmd_from_buffer(ctx_, cmd.c_str()); if(rc<0){ if(ignore_error){ LOGD("firewall")<<"nft cmd ignored error: "<<cmd; return false; } LOGE("firewall")<<"nft cmd failed: "<<cmd; throw std::runtime_error("libnftables: command failed"); } LOGT("firewall")<<"nft ok: "<<cmd; return true; }
 
-static std::vector<std::string> ParseNameservers(const std::string& path)
-{
-    std::ifstream f(path);
-    std::vector<std::string> out;
-    std::string tok;
-    while (f >> tok)
-    {
-        if (tok == "nameserver")
-        {
-            std::string ip;
-            if (f >> ip) out.push_back(ip);
-        }
-    }
-    // dedup...
-    return out;
-}
-
-bool IsIPv4(const std::string &s)
-{
-    if (s.empty())
-    {
-        return false;
-    }
-
-    // Быстрая проверка: только цифры и точки, ровно 3 точки, без ведущей/замыкающей точки
-    int dot_count = 0;
-    for (unsigned char ch : s)
-    {
-        if (ch == '.')
-        {
-            ++dot_count;
-        }
-        else if (!std::isdigit(ch))
-        {
-            return false;
-        }
-    }
-    if (dot_count != 3 || s.front() == '.' || s.back() == '.')
-    {
-        return false;
-    }
-
-    struct in_addr addr{};
-    return inet_pton(AF_INET, s.c_str(), &addr) == 1;
-}
-
-
 void FirewallRules::Apply()
 {
     const std::string ip  = NormalizeIp_(p_.server_ip);
@@ -166,21 +117,6 @@ void FirewallRules::Apply()
         if (p_.allow_dns_bootstrap) {
             RunCmd_("add rule inet " + p_.table_name + " " + p_.chain_name + " oifname \"" + wan + "\" udp dport 53 accept");
             RunCmd_("add rule inet " + p_.table_name + " " + p_.chain_name + " oifname \"" + wan + "\" tcp dport 53 accept");
-
-            if (p_.in_container)
-            {
-                auto ns = ParseNameservers("/etc/resolv.conf");
-                for (const auto& ip : ns)
-                {
-                    if (IsIPv4(ip)) {
-                        RunCmd_("add rule inet " + p_.table_name + " " + p_.chain_name + " ip daddr " + ip + " udp dport 53 accept");
-                        RunCmd_("add rule inet " + p_.table_name + " " + p_.chain_name + " ip daddr " + ip + " tcp dport 53 accept");
-                    } else {
-                        RunCmd_("add rule inet " + p_.table_name + " " + p_.chain_name + " ip6 daddr " + ip + " udp dport 53 accept");
-                        RunCmd_("add rule inet " + p_.table_name + " " + p_.chain_name + " ip6 daddr " + ip + " tcp dport 53 accept");
-                    }
-                }
-            }
         }
         if (p_.allow_dhcp) {
             RunCmd_("add rule inet " + p_.table_name + " " + p_.chain_name + " oifname \"" + wan + "\" udp sport 68 udp dport 67 accept");
