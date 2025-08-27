@@ -6,6 +6,7 @@
 #include "NetWatcher.hpp"
 #include "DNS.hpp"
 #include "NetworkRollback.hpp"
+#include "Client.hpp"
 
 #ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
@@ -28,13 +29,11 @@ using ssize_t = SSIZE_T;
 #include <set>
 #include <vector>
 #include <sstream>
+#include <thread>
 
-static volatile sig_atomic_t working = true;
-
-static void on_exit(int)
-{
-    working = false;
-}
+static std::atomic<bool> g_started { false };
+static volatile sig_atomic_t g_working = 1;
+static std::thread g_thread;
 
 static std::string strip_brackets(std::string s)
 {
@@ -203,8 +202,7 @@ static std::wstring ResolveFirewallAddressesW(const std::string &host)
     return out;
 }
 
-int main(int argc,
-         char **argv)
+static int ClientMain(int argc, char **argv)
 {
     Logger::Options logger_options;
     logger_options.app_name = "FlowForge";
@@ -237,9 +235,8 @@ int main(int argc,
     std::vector<std::string> dns_cli = {"10.8.0.1", "1.1.1.1"};
     bool dns_overridden = false;
 
-
     LOGD("client") << "Parsing CLI arguments";
-    for (int i = 1; i < argc; ++i)
+    for (int i = 0; i < argc; ++i)
     {
         std::string a = argv[i];
         if (a == "--tun" && i + 1 < argc)
@@ -482,10 +479,6 @@ int main(int argc,
     }
     LOGI("pluginwrapper") << "Connected to " << server_ip << ":" << port;
 
-    std::signal(SIGINT, on_exit);
-    std::signal(SIGTERM, on_exit);
-    LOGD("client") << "Signal handlers installed (SIGINT,SIGTERM)";
-
     auto send_to_net = [sess](const std::uint8_t *data,
                               std::size_t len) -> ssize_t
     {
@@ -531,7 +524,7 @@ int main(int argc,
     int rc = PluginWrapper::Client_Serve(plugin,
                                          receive_from_net,
                                          send_to_net,
-                                         &working);
+                                         &g_working);
     LOGI("pluginwrapper") << "Serve loop exited rc=" << rc;
 
     LOGD("pluginwrapper") << "Disconnecting client";
@@ -546,4 +539,77 @@ int main(int argc,
     WSACleanup();
     LOGI("client") << "Shutdown complete";
     return rc;
+}
+
+// Запуск клиента в отдельном потоке.
+// Ожидается, что argv/len — это ТОЛЬКО аргументы (без argv[0]).
+// Мы сами добавим фиктивный argv[0] = "flowforge".
+EXPORT int32_t Start(char **argv, int32_t len)
+{
+    if (g_started.load())
+    {
+        return -1; // уже запущено
+    }
+
+    // Снимем копию аргументов, чтобы не зависеть от времени жизни входных указателей.
+    std::vector<std::string> args;
+
+    if (argv && len > 0)
+    {
+        args.reserve(static_cast<size_t>(len) + 1);
+        for (int32_t i = 0; i < len; ++i)
+        {
+            if (argv[i] && *argv[i])
+            {
+                args.emplace_back(argv[i]);
+            }
+        }
+    }
+    g_working = 1;
+
+    g_thread = std::thread([args]() mutable
+       {
+           std::vector<char *> cargs;
+           cargs.reserve(args.size());
+           for (auto &s: args)
+           {
+               // безопасно: строки живут до конца лямбды
+               cargs.push_back(const_cast<char *>(s.c_str()));
+           }
+
+           ClientMain(static_cast<int>(cargs.size()), cargs.data());
+           g_started.store(false);
+       });
+
+    // Не детачим: хотим корректно join-ить в Stop() (без блокировки вызывающего).
+    g_started.store(true);
+    return 0;
+}
+
+// Мягкая остановка: сигналим рабочему коду и НЕ блокируем вызывающего.
+EXPORT int32_t Stop(void)
+{
+    if (!g_started.load())
+    {
+        return -2; // не запущено
+    }
+    g_working = 0;
+
+    // Фоновое ожидание завершения рабочего потока.
+    std::thread([]()
+    {
+        if (g_thread.joinable())
+        {
+            g_thread.join();
+        }
+        g_started.store(false);
+    }).detach();
+
+    return 0;
+}
+
+// Статус работы: 1 — запущен, 0 — остановлен
+EXPORT int32_t IsRunning(void)
+{
+    return g_started.load() ? 1 : 0;
 }
