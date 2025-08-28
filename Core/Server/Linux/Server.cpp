@@ -35,7 +35,7 @@ static int ServerMain(int argc, char **argv)
 
     std::string tun         = "svpn0";
     int         port        = 5555;
-    std::string plugin_path = "./libPlugUDP.so";
+    std::string plugin_path = "./libPlugDTLS.so";
 
     // Параметры адресации/NAT — задаются флагами
     std::string cidr4       = "10.8.0.1/24";
@@ -96,7 +96,7 @@ static int ServerMain(int argc, char **argv)
         else if (a == "-h" || a == "--help")
         {
             LOGI("server")
-                << "Usage: Server [--port 5555] [--tun svpn0] [--plugin ./libPlugUDP.so]\n"
+                << "Usage: Server [--port 5555] [--tun svpn0] [--plugin ./libPlugDTLS.so]\n"
                    "              [--cidr4 10.8.0.1/24] [--cidr6 fd00:dead:beef::1/64]\n"
                    "              [--nat44 <CIDR>] [--nat66 <CIDR>] [--mtu 1400] [--no-nat]\n";
             LOGI("server") << "Help displayed";

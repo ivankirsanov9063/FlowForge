@@ -223,7 +223,7 @@ static int ClientMain(int argc, char **argv)
     std::string tun = "cvpn0";
     std::string server_ip = "193.233.23.221";
     int port = 5555;
-    std::string plugin_path = "PlugUDP.dll";
+    std::string plugin_path = "PlugDTLS.dll";
 
     // Address plan defaults (можно переопределить через CLI)
     std::string local4 = "10.8.0.2";
@@ -301,7 +301,7 @@ static int ClientMain(int argc, char **argv)
         else if (a == "-h" || a == "--help")
         {
             LOGI("client") << "Usage: Client --server <ip|ipv6> [--port 5555] [--tun cvpn0] "
-                              "[--plugin PlugUDP.dll] [--local4 A.B.C.D] [--peer4 A.B.C.D] "
+                              "[--plugin PlugDTLS.dll] [--local4 A.B.C.D] [--peer4 A.B.C.D] "
                               "[--local6 ::addr] [--peer6 ::addr] [--mtu 1400] [--dns ip[,ip...]]";
 
             return 0;

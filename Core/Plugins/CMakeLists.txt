@@ -18,6 +18,6 @@ if(CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU")
     )
 endif()
 
-add_subdirectory(PlugUDP)
+add_subdirectory(PlugDTLS)
 
 install(DIRECTORY DESTINATION bin)
