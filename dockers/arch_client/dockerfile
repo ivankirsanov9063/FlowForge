@@ -1,0 +1,14 @@
+FROM archlinux:latest AS builder
+
+# Обновляем систему и устанавливаем необходимые пакеты
+RUN pacman -Syu --noconfirm && pacman -S --noconfirm base-devel cmake git pkgconf libnl nftables boost sudo iproute2 jq
+
+RUN pacman -S --noconfirm python python-pip && pip install requests --break-system-packages
+
+WORKDIR /app
+
+RUN git clone https://github.com/ivankirsanov9062/FlowForge.git -b main .
+
+COPY /dockers/docker.py /app/docker.py
+
+CMD ["python3", "docker.py"]

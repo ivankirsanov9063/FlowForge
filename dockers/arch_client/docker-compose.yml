@@ -1,0 +1,13 @@
+version: '3.8'
+
+services:
+  ubuntu_client:
+    build:
+      context: ..\..\
+      dockerfile: dockers\arch_client\Dockerfile
+    image: arch_client
+    privileged: true
+    cap_add:
+      - NET_ADMIN
+    container_name: arch_client
+    command: ["python3", "docker.py"]
