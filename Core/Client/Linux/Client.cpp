@@ -71,7 +71,7 @@ static int ClientMain(int argc, char **argv)
     std::string tun         = "cvpn0";
     std::string server_ip   = "193.233.23.221";
     int         port        = 5555;
-    std::string plugin_path = "./libPlugDTLS.so";
+    std::string plugin_path = "./libPlugUDP.so";
 
     // Address plan defaults (переопределяем через CLI)
     std::string local4 = "10.8.0.2";
@@ -126,7 +126,7 @@ static int ClientMain(int argc, char **argv)
         {
                 LOGI("client") << "Usage: " << argv[0]
                     << " --server <ip|[ipv6]> [--port 5555] [--tun cvpn0] "
-                    << "[--plugin ./libPlugDTLS.so] "
+                    << "[--plugin ./libPlugUDP.so] "
                     << "[--local4 A.B.C.D] [--peer4 A.B.C.D] "
                     << "[--local6 ::addr] [--peer6 ::addr] "
                     << "[--mtu 1400] [--dns ip[,ip...]]";
