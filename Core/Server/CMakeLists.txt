@@ -1,4 +1,4 @@
-add_executable(ServerCore
+add_library(ServerCore SHARED
         ${CMAKE_SYSTEM_NAME}/Server.cpp
         ${CMAKE_SYSTEM_NAME}/Network.cpp
         ${CMAKE_SYSTEM_NAME}/NetworkRollback.cpp
@@ -10,7 +10,7 @@ add_executable(ServerCore
 
 target_compile_features(ServerCore PRIVATE cxx_std_23)
 
-target_include_directories(ServerCore PRIVATE ${CMAKE_SOURCE_DIR})
+target_include_directories(ServerCore PRIVATE ${CMAKE_SOURCE_DIR} ${CMAKE_CURRENT_SOURCE_DIR})
 
 find_package(Boost REQUIRED COMPONENTS log log_setup thread filesystem)
 target_link_libraries(ServerCore PUBLIC Boost::log Boost::log_setup Boost::thread Boost::filesystem)

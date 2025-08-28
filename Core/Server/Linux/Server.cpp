@@ -6,6 +6,7 @@
 #include "NetworkRollback.hpp"
 #include "NetWatcher.hpp"
 #include "Core/Logger.hpp"
+#include "Server.hpp"
 
 #include <csignal>
 #include <fcntl.h>
@@ -16,15 +17,11 @@
 #include <stdexcept>
 #include <cstdint>
 
-static volatile sig_atomic_t working = true;
+static std::atomic<bool> g_started { false };
+static volatile sig_atomic_t g_working = 1;
+static std::thread g_thread;
 
-void on_exit(int)
-{
-    working = false;
-}
-
-int main(int argc,
-         char **argv)
+static int ServerMain(int argc, char **argv)
 {
     Logger::Options logger_options;
     logger_options.app_name = "FlowForge";
@@ -237,16 +234,12 @@ int main(int argc,
             return count;
         };
 
-        std::signal(SIGINT, on_exit);
-        std::signal(SIGTERM, on_exit);
-        LOGI("server") << "Signals: handlers installed (SIGINT/SIGTERM)";
-
         LOGI("server") << "Serve: entering loop";
         PluginWrapper::Server_Serve(
             plugin,
             receive_from_net,
             send_to_net,
-            &working);
+            &g_working);
         LOGI("server") << "Serve: exited";
 
         if (tun_fd >= 0)
@@ -283,3 +276,76 @@ int main(int argc,
         return 1;
     }
 }
+
+// Запуск сервера в отдельном потоке.
+// Ожидается, что argv/len — это ТОЛЬКО аргументы (без argv[0]).
+EXPORT int32_t Start(char **argv, int32_t len)
+{
+    if (g_started.load())
+    {
+        return -1; // уже запущено
+    }
+
+    // Снимем копию аргументов, чтобы не зависеть от времени жизни входных указателей.
+    std::vector<std::string> args;
+
+    if (argv && len > 0)
+    {
+        args.reserve(static_cast<size_t>(len) + 1);
+        for (int32_t i = 0; i < len; ++i)
+        {
+            if (argv[i] && *argv[i])
+            {
+                args.emplace_back(argv[i]);
+            }
+        }
+    }
+    g_working = 1;
+
+    g_thread = std::thread([args]() mutable
+                           {
+                               std::vector<char *> cargs;
+                               cargs.reserve(args.size());
+                               for (auto &s: args)
+                               {
+                                   // безопасно: строки живут до конца лямбды
+                                   cargs.push_back(const_cast<char *>(s.c_str()));
+                               }
+
+                               ServerMain(static_cast<int>(cargs.size()), cargs.data());
+                               g_started.store(false);
+                           });
+
+    // Не детачим: хотим корректно join-ить в Stop() (без блокировки вызывающего).
+    g_started.store(true);
+    return 0;
+}
+
+// Мягкая остановка: сигналим рабочему коду и НЕ блокируем вызывающего.
+EXPORT int32_t Stop(void)
+{
+    if (!g_started.load())
+    {
+        return -2; // не запущено
+    }
+    g_working = 0;
+
+    // Фоновое ожидание завершения рабочего потока.
+    std::thread([]()
+                {
+                    if (g_thread.joinable())
+                    {
+                        g_thread.join();
+                    }
+                    g_started.store(false);
+                }).detach();
+
+    return 0;
+}
+
+// Статус работы: 1 — запущен, 0 — остановлен
+EXPORT int32_t IsRunning(void)
+{
+    return g_started.load() ? 1 : 0;
+}
+

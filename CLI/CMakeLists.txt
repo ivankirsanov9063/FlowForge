@@ -19,3 +19,6 @@ if(CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU")
 endif()
 
 add_subdirectory(Client)
+if (CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    add_subdirectory(Server)
+endif()

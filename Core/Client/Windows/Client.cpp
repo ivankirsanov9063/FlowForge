@@ -543,7 +543,6 @@ static int ClientMain(int argc, char **argv)
 
 // Запуск клиента в отдельном потоке.
 // Ожидается, что argv/len — это ТОЛЬКО аргументы (без argv[0]).
-// Мы сами добавим фиктивный argv[0] = "flowforge".
 EXPORT int32_t Start(char **argv, int32_t len)
 {
     if (g_started.load())
