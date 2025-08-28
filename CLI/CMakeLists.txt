@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.18)
 
-project(Core LANGUAGES CXX)
+project(CLI LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -19,7 +19,3 @@ if(CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU")
 endif()
 
 add_subdirectory(Client)
-add_subdirectory(Plugins)
-if (CMAKE_SYSTEM_NAME STREQUAL "Linux")
-    add_subdirectory(Server)
-endif()

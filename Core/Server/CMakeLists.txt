@@ -1,4 +1,4 @@
-add_executable(Server
+add_executable(ServerCore
         ${CMAKE_SYSTEM_NAME}/Server.cpp
         ${CMAKE_SYSTEM_NAME}/Network.cpp
         ${CMAKE_SYSTEM_NAME}/NetworkRollback.cpp
@@ -8,19 +8,19 @@ add_executable(Server
         ${CMAKE_SOURCE_DIR}/Core/Logger.cpp
 )
 
-target_compile_features(Server PRIVATE cxx_std_23)
+target_compile_features(ServerCore PRIVATE cxx_std_23)
 
-target_include_directories(Server PRIVATE ${CMAKE_SOURCE_DIR})
+target_include_directories(ServerCore PRIVATE ${CMAKE_SOURCE_DIR})
 
 find_package(Boost REQUIRED COMPONENTS log log_setup thread filesystem)
-target_link_libraries(Server PUBLIC Boost::log Boost::log_setup Boost::thread Boost::filesystem)
+target_link_libraries(ServerCore PUBLIC Boost::log Boost::log_setup Boost::thread Boost::filesystem)
 
 if (CMAKE_SYSTEM_NAME STREQUAL "Linux")
     find_package(PkgConfig REQUIRED)
     pkg_check_modules(LIBNL REQUIRED libnl-3.0 libnl-route-3.0)
     pkg_check_modules(NFT REQUIRED libnftables)
-    target_include_directories(Server PRIVATE ${LIBNL_INCLUDE_DIRS} ${NFT_INCLUDE_DIRS})
-    target_link_libraries(Server PRIVATE ${LIBNL_LIBRARIES} ${NFT_LIBRARIES})
+    target_include_directories(ServerCore PRIVATE ${LIBNL_INCLUDE_DIRS} ${NFT_INCLUDE_DIRS})
+    target_link_libraries(ServerCore PRIVATE ${LIBNL_LIBRARIES} ${NFT_LIBRARIES})
 endif()
 
-install(TARGETS Server RUNTIME DESTINATION bin)
+install(TARGETS ServerCore RUNTIME DESTINATION bin)

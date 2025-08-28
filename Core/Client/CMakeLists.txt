@@ -1,11 +1,11 @@
 cmake_minimum_required(VERSION 3.18)
 
-project(Client LANGUAGES CXX)
+project(ClientCore LANGUAGES CXX)
 
 # Выравниваем ABI Boost под системные .so (в т.ч. libboost_log.so)
 add_compile_definitions(BOOST_ALL_DYN_LINK)
 
-add_executable(Client
+add_library(ClientCore SHARED
         ${CMAKE_SYSTEM_NAME}/Client.cpp
         ${CMAKE_SYSTEM_NAME}/Network.cpp
         ${CMAKE_SYSTEM_NAME}/FirewallRules.cpp
@@ -19,17 +19,17 @@ add_executable(Client
 )
 
 if (WIN32)
-    target_compile_definitions(Client PRIVATE _WIN32_WINNT=0x0602 BOOST_USE_WINAPI_VERSION=0x0602)
+    target_compile_definitions(ClientCore PRIVATE _WIN32_WINNT=0x0602 BOOST_USE_WINAPI_VERSION=0x0602)
 endif()
 
-target_compile_features(Client PRIVATE cxx_std_23)
-target_include_directories(Client PRIVATE ${CMAKE_SOURCE_DIR})
+target_compile_features(ClientCore PRIVATE cxx_std_23)
+target_include_directories(ClientCore PRIVATE ${CMAKE_SOURCE_DIR} ${CMAKE_CURRENT_SOURCE_DIR})
 
 find_package(Boost REQUIRED COMPONENTS log log_setup thread filesystem regex)
 find_package(Threads REQUIRED)
 
 # Важно: log_setup раньше log; добавляем потоки и dl (Linux)
-target_link_libraries(Client
+target_link_libraries(ClientCore
         PRIVATE
         Boost::log_setup
         Boost::log
@@ -44,13 +44,13 @@ if (CMAKE_SYSTEM_NAME STREQUAL "Linux")
     pkg_check_modules(LIBNL3 REQUIRED libnl-3.0 libnl-route-3.0)
     pkg_check_modules(LIBNFT REQUIRED libnftables)
     pkg_check_modules(LIBSYSTEMD REQUIRED libsystemd)
-    target_compile_definitions(Client PRIVATE HAVE_LIBSYSTEMD=1)
-    target_include_directories(Client PRIVATE ${LIBNL3_INCLUDE_DIRS} ${LIBNFT_INCLUDE_DIRS} ${LIBSYSTEMD_INCLUDE_DIRS})
-    target_link_libraries(Client PRIVATE ${LIBNL3_LIBRARIES} ${LIBNFT_LIBRARIES} ${LIBSYSTEMD_LIBRARIES} dl)
+    target_compile_definitions(ClientCore PRIVATE HAVE_LIBSYSTEMD=1)
+    target_include_directories(ClientCore PRIVATE ${LIBNL3_INCLUDE_DIRS} ${LIBNFT_INCLUDE_DIRS} ${LIBSYSTEMD_INCLUDE_DIRS})
+    target_link_libraries(ClientCore PRIVATE ${LIBNL3_LIBRARIES} ${LIBNFT_LIBRARIES} ${LIBSYSTEMD_LIBRARIES} dl)
 endif()
 
 if (WIN32)
-    target_link_libraries(Client PRIVATE Ws2_32 Iphlpapi)
+    target_link_libraries(ClientCore PRIVATE Ws2_32 Iphlpapi)
 endif()
 
-install(TARGETS Client RUNTIME DESTINATION bin)
+install(TARGETS ClientCore RUNTIME DESTINATION bin)

@@ -9,6 +9,7 @@
 #include "FirewallRules.hpp"
 #include "DNS.hpp"
 #include "NetworkRollback.hpp"
+#include "Client.hpp"
 
 #include <csignal>
 #include <cstdint>
@@ -21,12 +22,9 @@
 #include <arpa/inet.h>
 #include <sys/stat.h>
 
+static std::atomic<bool> g_started { false };
 static volatile sig_atomic_t g_working = 1;
-
-static void OnExit(int)
-{
-    g_working = 0;
-}
+static std::thread g_thread;
 
 static bool IsElevated()
 {
@@ -51,7 +49,7 @@ static bool IsIpLiteral(const std::string &s)
            || ::inet_pton(AF_INET6, x.c_str(), &a6) == 1;
 }
 
-int main(int argc, char **argv)
+static int ClientMain(int argc, char **argv)
 {
     Logger::Options log_opts;
     log_opts.app_name             = "FlowForge";
@@ -87,7 +85,7 @@ int main(int argc, char **argv)
 
     LOGD("client") << "Parsing CLI arguments";
     // CLI
-    for (int i = 1; i < argc; ++i)
+    for (int i = 0; i < argc; ++i)
     {
         std::string a = argv[i];
         if (a == "--tun"    && i + 1 < argc) { tun         = argv[++i]; }
@@ -275,10 +273,6 @@ int main(int argc, char **argv)
     }
     LOGI("pluginwrapper") << "Connected";
 
-    std::signal(SIGINT,  OnExit);
-    std::signal(SIGTERM, OnExit);
-    LOGD("client") << "Signal handlers installed";
-
     auto SendToNet = [tun_fd](const std::uint8_t* data, std::size_t len) -> ssize_t
     {
         ssize_t wr = ::write(tun_fd, data, len);
@@ -318,3 +312,77 @@ int main(int argc, char **argv)
     LOGI("client") << "Shutdown complete";
     return rc;
 }
+
+// Запуск клиента в отдельном потоке.
+// Ожидается, что argv/len — это ТОЛЬКО аргументы (без argv[0]).
+// Мы сами добавим фиктивный argv[0] = "flowforge".
+EXPORT int32_t Start(char **argv, int32_t len)
+{
+    if (g_started.load())
+    {
+        return -1; // уже запущено
+    }
+
+    // Снимем копию аргументов, чтобы не зависеть от времени жизни входных указателей.
+    std::vector<std::string> args;
+
+    if (argv && len > 0)
+    {
+        args.reserve(static_cast<size_t>(len) + 1);
+        for (int32_t i = 0; i < len; ++i)
+        {
+            if (argv[i] && *argv[i])
+            {
+                args.emplace_back(argv[i]);
+            }
+        }
+    }
+    g_working = 1;
+
+    g_thread = std::thread([args]() mutable
+       {
+           std::vector<char *> cargs;
+           cargs.reserve(args.size());
+           for (auto &s: args)
+           {
+               // безопасно: строки живут до конца лямбды
+               cargs.push_back(const_cast<char *>(s.c_str()));
+           }
+
+           ClientMain(static_cast<int>(cargs.size()), cargs.data());
+           g_started.store(false);
+       });
+
+    // Не детачим: хотим корректно join-ить в Stop() (без блокировки вызывающего).
+    g_started.store(true);
+    return 0;
+}
+
+// Мягкая остановка: сигналим рабочему коду и НЕ блокируем вызывающего.
+EXPORT int32_t Stop(void)
+{
+    if (!g_started.load())
+    {
+        return -2; // не запущено
+    }
+    g_working = 0;
+
+    // Фоновое ожидание завершения рабочего потока.
+    std::thread([]()
+    {
+        if (g_thread.joinable())
+        {
+            g_thread.join();
+        }
+        g_started.store(false);
+    }).detach();
+
+    return 0;
+}
+
+// Статус работы: 1 — запущен, 0 — остановлен
+EXPORT int32_t IsRunning(void)
+{
+    return g_started.load() ? 1 : 0;
+}
+
