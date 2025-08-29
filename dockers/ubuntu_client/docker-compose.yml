@@ -1,15 +1,15 @@
 version: '3.8'
 
 services:
-  debian:
+  ubuntu:
     build:
       context: ..\..\
-      dockerfile: dockers\debian_client\Dockerfile
-    image: debian_client
+      dockerfile: dockers\ubuntu_client\Dockerfile
+    image: ubuntu_client
     privileged: true
     cap_add:
       - NET_ADMIN
     ports:
       - "0.0.0.0:5555:5555"
-    container_name: debian_client
+    container_name: ubuntu_client
     command: ["python3", "docker.py"]

@@ -7,8 +7,6 @@ RUN pacman -S --noconfirm python python-pip && pip install requests --break-syst
 
 WORKDIR /app
 
-RUN git clone https://github.com/ivankirsanov9062/FlowForge.git -b main .
-
 COPY /dockers/docker.py /app/docker.py
 
 CMD ["python3", "docker.py"]

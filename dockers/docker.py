@@ -33,38 +33,41 @@ def monitor_ip(initial_ip, process, stop_event):
             # Завершаем программу с кодом 0
             sys.exit(0)
 
-def main():
-    # 1) Запуск build.sh
+def main(branche):
+    git_clone = ['git', 'clone', 'https://github.com/ivankirsanov9062/FlowForge.git', '-b', branche, 'FlowForge']
+    print(f'Клонирование репозитория. Ветка: {branche}')
+
+# Используем subprocess.run, чтобы дождаться завершения клонирования
+    result = subprocess.run(git_clone, cwd='/app')
+    if result.returncode != 0:
+        print("Ошибка при клонировании репозитория")
+        sys.exit(1)
+
     print("Запуск скрипта build.sh")
     build_script = './build.sh'
-    result = subprocess.run(['bash', build_script])
+    result = subprocess.run(['bash', build_script], cwd='/app/FlowForge/')
     if result.returncode != 0:
         print("Ошибка выполнения build.sh")
         sys.exit(1)
-    
-    # 2) Проверка текущего внешнего IP
+
     initial_ip = get_external_ip()
     if initial_ip is None:
         print("Не удалось получить внешний IP. Завершение.")
         sys.exit(1)
+
     print(f"Начальный внешний IP: {initial_ip}")
 
-    # 3) Запуск клиента
     print("Запуск клиента")
-    client_process = subprocess.Popen(['sudo', './Client'], cwd='/app/build/bin')
+    client_process = subprocess.Popen(['sudo', './Client'], cwd='/app/FlowForge/build/bin')
 
-    # 4) В отдельном потоке, через 10 секунд проверить IP
     stop_event = threading.Event()
     monitor_thread = threading.Thread(target=monitor_ip, args=(initial_ip, client_process, stop_event))
     monitor_thread.start()
 
     try:
-        # 4) Ожидание завершения клиента
         client_process.wait()
-        # Если процесс завершился сам, останавливаем монитор
         stop_event.set()
         monitor_thread.join()
-        # 5) Если IP не изменился, возвращаем 1
         current_ip = get_external_ip()
         if current_ip == initial_ip:
             print("IP не изменился, программа завершена с кодом 1")
@@ -80,4 +83,4 @@ def main():
         sys.exit(1)
 
 if __name__ == "__main__":
-    main()
+    main('main')

@@ -1,7 +1,7 @@
 version: '3.8'
 
 services:
-  ubuntu_client:
+  arch:
     build:
       context: ..\..\
       dockerfile: dockers\arch_client\Dockerfile
@@ -9,5 +9,7 @@ services:
     privileged: true
     cap_add:
       - NET_ADMIN
+    ports:
+      - "0.0.0.0:5555:5555"
     container_name: arch_client
     command: ["python3", "docker.py"]
