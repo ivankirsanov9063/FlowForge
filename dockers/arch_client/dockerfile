@@ -7,8 +7,7 @@ RUN pacman -S --noconfirm python python-pip && pip install requests --break-syst
 
 WORKDIR /app
 
-RUN git clone https://github.com/ivankirsanov9062/FlowForge.git -b main .
-
 COPY /dockers/docker.py /app/docker.py
 
-CMD ["python3", "docker.py"]
+#python3 docker.py <ветка> <режим> <файл который нужно запускать>
+CMD ["python3", "docker.py", "main", "client", "Client"]
