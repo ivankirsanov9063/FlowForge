@@ -479,7 +479,6 @@ extern "C" int Client_Serve(
                                ssize_t n = receive_from_net(buf.data(), buf.size());
                                if (n <= 0)
                                {
-                                   LogWarn("client.up", std::string("receive_from_net error or EOF: ") + std::to_string(n));
                                    SleepMs(10);
                                    continue;
                                }
@@ -504,7 +503,6 @@ extern "C" int Client_Serve(
                                  bool ok = ReadFrame(*g_client_tls, frame, ec);
                                  if (!ok)
                                  {
-                                     LogWarn("client.down", std::string("read error ") + ec.message());
                                      SleepMs(50);
                                      continue;
                                  }
@@ -636,7 +634,6 @@ extern "C" int Server_Serve(
                                         ssize_t n = receive_from_net(buf.data(), buf.size());
                                         if (n <= 0)
                                         {
-                                            LogWarn("server.up", std::string("receive_from_net error or EOF: ") + std::to_string(n));
                                             SleepMs(10);
                                             continue;
                                         }

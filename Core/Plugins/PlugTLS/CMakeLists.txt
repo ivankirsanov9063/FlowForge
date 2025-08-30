@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.18)
-project(PlugUDP LANGUAGES CXX)
+project(PlugTLS LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -11,16 +11,16 @@ find_package(Threads REQUIRED)
 find_package(OpenSSL REQUIRED)
 find_package(Boost 1.70 REQUIRED COMPONENTS system)
 
-add_library(PlugUDP SHARED PlugUDP.cpp)
+add_library(PlugTLS SHARED PlugTLS.cpp)
 
 # Ваши общие инклуды проекта
-target_include_directories(PlugUDP PUBLIC ${CMAKE_SOURCE_DIR} ${Boost_INCLUDE_DIRS})
+target_include_directories(PlugTLS PUBLIC ${CMAKE_SOURCE_DIR} ${Boost_INCLUDE_DIRS})
 
 # Общие дефайны (при желании)
-target_compile_definitions(PlugUDP PRIVATE BOOST_ASIO_NO_DEPRECATED)
+target_compile_definitions(PlugTLS PRIVATE BOOST_ASIO_NO_DEPRECATED)
 
 # Линковка, общая для всех ОС
-target_link_libraries(PlugUDP PRIVATE
+target_link_libraries(PlugTLS PRIVATE
         OpenSSL::SSL
         OpenSSL::Crypto
         Boost::system
@@ -30,13 +30,13 @@ target_link_libraries(PlugUDP PRIVATE
 # Платформенные отличия
 if (WIN32)
     # Сокеты и крипто-API Windows, требуются OpenSSL/Asio
-    target_link_libraries(PlugUDP PRIVATE ws2_32 Crypt32 Bcrypt)
+    target_link_libraries(PlugTLS PRIVATE ws2_32 Crypt32 Bcrypt)
 else()
     # На Linux/macOS — провал линковки при неопределённых символах
-    target_link_options(PlugUDP PRIVATE
+    target_link_options(PlugTLS PRIVATE
             "-Wl,--no-undefined"
             "-Wl,-z,defs"
     )
 endif()
 
-set_target_properties(PlugUDP PROPERTIES OUTPUT_NAME PlugUDP)
+set_target_properties(PlugTLS PROPERTIES OUTPUT_NAME PlugTLS)
