@@ -350,8 +350,8 @@ static int ClientMain(int argc, char **argv)
     };
     FirewallRules fw(cfg); // RAII
     LOGI("firewallrules") << "Firewall rules prepared";
-    fw.Allow(FirewallRules::Protocol::UDP, port);
-    LOGI("firewallrules") << "Allow UDP port " << port;
+    fw.Allow(FirewallRules::Protocol::TCP, port);
+    LOGI("firewallrules") << "Allow TCP port " << port;
 
     LOGD("pluginwrapper") << "Loading plugin: " << plugin_path;
     auto plugin = PluginWrapper::Load(plugin_path);

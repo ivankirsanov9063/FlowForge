@@ -1,3 +1,5 @@
+#include "Core/Plugin.hpp"
+
 #include <boost/asio.hpp>
 #include <boost/asio/ssl.hpp>
 #include <boost/asio/ssl/error.hpp>
@@ -15,7 +17,19 @@
 #include <optional>
 #include <array>
 #include <system_error>
-#include <arpa/inet.h>
+// --- платф. заголовки для htons/ntohs и др. ---
+#if defined(_WIN32)
+  #include <winsock2.h>
+  #include <ws2tcpip.h>
+  #include <BaseTsd.h>
+  typedef SSIZE_T ssize_t;
+  #ifdef _MSC_VER
+  #pragma comment(lib, "Ws2_32.lib")
+  #pragma comment(lib, "Crypt32.lib") // часто нужен OpenSSL на Windows
+  #endif
+#else
+  #include <arpa/inet.h>
+#endif
 
 // ---------- Traffic accounting (global atomic counters) ----------
 // Client side
@@ -792,15 +806,15 @@ namespace ff
 } // namespace ff
 
 // ---------- C ABI EXPORTS ----------
-extern "C" bool Client_Connect(const std::string& server_ip, std::uint16_t port) noexcept
+PLUGIN_API bool Client_Connect(const std::string& server_ip, std::uint16_t port) noexcept
 {
     return ff::Client_Connect(server_ip, port);
 }
-extern "C" void Client_Disconnect() noexcept
+PLUGIN_API void Client_Disconnect() noexcept
 {
     ff::Client_Disconnect();
 }
-extern "C" int Client_Serve(
+PLUGIN_API int Client_Serve(
         const std::function<ssize_t(std::uint8_t*, std::size_t)>& receive_from_net,
         const std::function<ssize_t(const std::uint8_t*, std::size_t)>& send_to_net,
         const volatile sig_atomic_t* working_flag) noexcept
@@ -808,11 +822,11 @@ extern "C" int Client_Serve(
     return ff::Client_Serve(receive_from_net, send_to_net, working_flag);
 }
 
-extern "C" bool Server_Bind(std::uint16_t port) noexcept
+PLUGIN_API bool Server_Bind(std::uint16_t port) noexcept
 {
     return ff::Server_Bind(port);
 }
-extern "C" int Server_Serve(
+PLUGIN_API int Server_Serve(
         const std::function<ssize_t(std::uint8_t*, std::size_t)>& receive_from_net,
         const std::function<ssize_t(const std::uint8_t*, std::size_t)>& send_to_net,
         const volatile sig_atomic_t* working_flag) noexcept
