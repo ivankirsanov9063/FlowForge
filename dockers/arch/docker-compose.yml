@@ -1,0 +1,20 @@
+version: '3.8'
+
+services:
+  arch:
+    build:
+      context: ..\..\
+      dockerfile: dockers\arch\Dockerfile
+    image: test_arch
+    privileged: true
+    cap_add:
+      - NET_ADMIN
+    ports:
+      - "0.0.0.0:5555:5555"
+    container_name: arch
+    environment:
+      branche: ""
+      mode: ""
+      start: ""
+    #python3 docker.py <ветка> <режим> <файл который нужно запускать>
+    command: ["python3", "docker.py", "${BRANCHE}", "${MODE}", "${START}"]

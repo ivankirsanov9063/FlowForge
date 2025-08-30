@@ -1,0 +1,20 @@
+version: '3.8'
+
+services:
+  debian:
+    build:
+      context: ..\..\
+      dockerfile: dockers\debian\Dockerfile
+    image: test_debian
+    privileged: true
+    cap_add:
+      - NET_ADMIN
+    ports:
+      - "0.0.0.0:5555:5555"
+    container_name: debian
+    environment:
+      branche: ""
+      mode: ""
+      start: ""
+    #python3 docker.py <ветка> <режим> <файл который нужно запускать>
+    command: ["python3", "docker.py", "${BRANCHE}", "${MODE}", "${START}"]
