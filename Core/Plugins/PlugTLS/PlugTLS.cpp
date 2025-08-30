@@ -21,6 +21,8 @@
 // - For production, consider: bounded queues, backpressure, per-client rate limits,
 //   TLS options hardening, graceful reconnection logic, and stronger error taxonomy.
 
+#include "Core/Plugin.hpp"
+
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
@@ -387,7 +389,7 @@ namespace
     }
 } // anonymous namespace
 
-extern "C" bool Client_Connect(const std::string &server_ip, std::uint16_t port) noexcept
+PLUGIN_API bool Client_Connect(const std::string &server_ip, std::uint16_t port) noexcept
 {
     try
     {
@@ -438,7 +440,7 @@ extern "C" bool Client_Connect(const std::string &server_ip, std::uint16_t port)
     }
 }
 
-extern "C" void Client_Disconnect() noexcept
+PLUGIN_API void Client_Disconnect() noexcept
 {
     std::lock_guard<std::mutex> lk(g_client_mx);
     if (!g_client_tls) return;
@@ -451,7 +453,7 @@ extern "C" void Client_Disconnect() noexcept
     LogInfo("client", "disconnected");
 }
 
-extern "C" int Client_Serve(
+PLUGIN_API int Client_Serve(
         const std::function<ssize_t(std::uint8_t *, std::size_t)> &receive_from_net,
         const std::function<ssize_t(const std::uint8_t *, std::size_t)> &send_to_net,
         const volatile sig_atomic_t *working_flag) noexcept
@@ -529,7 +531,7 @@ extern "C" int Client_Serve(
     return 0;
 }
 
-extern "C" bool Server_Bind(std::uint16_t port) noexcept
+PLUGIN_API bool Server_Bind(std::uint16_t port) noexcept
 {
     try
     {
@@ -585,7 +587,7 @@ extern "C" bool Server_Bind(std::uint16_t port) noexcept
     }
 }
 
-extern "C" int Server_Serve(
+PLUGIN_API int Server_Serve(
         const std::function<ssize_t(std::uint8_t *, std::size_t)> &receive_from_net,
         const std::function<ssize_t(const std::uint8_t *, std::size_t)> &send_to_net,
         const volatile sig_atomic_t *working_flag) noexcept
