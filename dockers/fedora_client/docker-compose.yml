@@ -1,0 +1,16 @@
+version: '3.8'
+
+services:
+  fedora:
+    build:
+      context: ..\..\
+      dockerfile: dockers\fedora_client\Dockerfile
+    image: fedora_client
+    privileged: true
+    cap_add:
+      - NET_ADMIN
+    ports:
+      - "0.0.0.0:5555:5555"
+    container_name: fedora_client
+    #python3 docker.py <ветка> <режим> <файл который нужно запускать>
+    command: ["python3", "docker.py", "main", "client", "Client"]
