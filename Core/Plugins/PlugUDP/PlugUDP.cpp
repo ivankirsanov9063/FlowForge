@@ -1,835 +1,689 @@
-#include "Core/Plugin.hpp"
+// PlugTLS.cpp
+// Compact TLS (OpenSSL via Boost.Asio) client/server for a VPN-style plugin.
+// - Mutual TLS authentication by certificates (paths via env MBEDTLS_CA/MBEDTLS_CERT/MBEDTLS_KEY).
+// - Threaded Asio for concurrency. Multi-client server with per-client routing.
+// - Length-prefixed framing over TLS. Payloads are raw IP packets from TUN.
+// - Server demux: routes TUN packets to a client by IPv4 destination address, learned
+//   from client->server packets (source IPv4 observed on first uplink packet).
+// - All runtime errors are logged to std::cerr and do not *intentionally* tear down
+//   the process; where recovery is impossible (e.g., dead socket), we keep looping
+//   while the working flag stays set.
+//
+// Build (example):
+//   g++ -std=c++23 -fPIC -shared PlugTLS.cpp -o libPlugTLS.so \
+//       -lssl -lcrypto -lboost_system -lpthread
+//
+// Notes:
+// - This is a minimal, compact implementation. It prefers higher-level Boost.Asio APIs.
+// - It avoids closing connections on transient errors; for hard errors we log and keep
+//   the service loop alive until the working flag turns off (the broken peer socket
+//   will simply keep failing reads/writes, which we continue to log).
+// - For production, consider: bounded queues, backpressure, per-client rate limits,
+//   TLS options hardening, graceful reconnection logic, and stronger error taxonomy.
+
+#include <cstdint>
+#include <cstdlib>
+#include <cstring>
+#include <csignal>
+#include <cerrno>
+
+#include <iostream>
+#include <string>
+#include <vector>
+#include <deque>
+#include <unordered_map>
+#include <unordered_set>
+#include <memory>
+#include <mutex>
+#include <thread>
+#include <condition_variable>
+#include <atomic>
+#include <functional>
+#include <chrono>
+#include <array>
+
+#include <unistd.h>
+#include <arpa/inet.h>
 
 #include <boost/asio.hpp>
 #include <boost/asio/ssl.hpp>
-#include <boost/asio/ssl/error.hpp>
-#include <iostream>
-#include <thread>
-#include <vector>
-#include <unordered_map>
-#include <unordered_set>
-#include <functional>
-#include <memory>
-#include <mutex>
-#include <atomic>
-#include <cstring>
-#include <csignal>
-#include <optional>
-#include <array>
-#include <system_error>
-// --- платф. заголовки для htons/ntohs и др. ---
-#if defined(_WIN32)
-  #include <winsock2.h>
-  #include <ws2tcpip.h>
-  #include <BaseTsd.h>
-  typedef SSIZE_T ssize_t;
-  #ifdef _MSC_VER
-  #pragma comment(lib, "Ws2_32.lib")
-  #pragma comment(lib, "Crypt32.lib") // часто нужен OpenSSL на Windows
-  #endif
-#else
-  #include <arpa/inet.h>
-#endif
 
-// ---------- Traffic accounting (global atomic counters) ----------
-// Client side
-static std::atomic<std::uint64_t> client_recv_net_bytes{0};     // bytes read via receive_from_net (client.up: TUN->client)
-static std::atomic<std::uint64_t> client_send_net_bytes{0};     // bytes written via send_to_net   (client.down: client->TUN)
-static std::atomic<std::uint64_t> client_to_server_bytes{0};    // payload bytes sent to server over TLS
-static std::atomic<std::uint64_t> client_from_server_bytes{0};  // payload bytes received from server over TLS
-// Server side
-static std::atomic<std::uint64_t> server_recv_net_bytes{0};     // bytes read via receive_from_net (server.down: TUN->server)
-static std::atomic<std::uint64_t> server_send_net_bytes{0};     // bytes written via send_to_net   (server.session: server->TUN)
-static std::atomic<std::uint64_t> server_from_client_bytes{0};  // payload bytes received from clients over TLS
-static std::atomic<std::uint64_t> server_to_client_bytes{0};    // payload bytes sent to clients over TLS
+using ssize_t = ::ssize_t;
 
-
-// Компактная TLS-библиотека для VPN-транспорта
-// - TLS (TCP) через Boost.Asio (OpenSSL)
-// - Mutual TLS (verify_peer + client cert) через env-пути:
-//   MBEDTLS_CA, MBEDTLS_CERT, MBEDTLS_KEY
-// - Фрейминг: [uint16_be length][payload]
-// - Сервер с несколькими клиентами и маршрутизацией по dest IP
-// - Логи в std::cerr, корректная остановка по working_flag
-
-namespace ff
+namespace
 {
-    using boost::asio::ip::tcp;
+    using tcp = boost::asio::ip::tcp;
     namespace ssl = boost::asio::ssl;
+    using boost::asio::ip::address_v4;
 
-    static constexpr std::size_t MAX_FRAME = 65535;
+    // --------- Utilities ---------
 
-    // ---------- Логирование ----------
-    static inline void LogErr(const char* where, const std::string& msg)
+    static inline void LogErr(const char* tag, const std::string& msg)
     {
-        std::cerr << "[error] [" << where << "] " << msg << std::endl;
-    }
-    static inline void LogWarn(const char* where, const std::string& msg)
-    {
-        std::cerr << "[warning] [" << where << "] " << msg << std::endl;
-    }
-    static inline void LogInfo(const char* where, const std::string& msg)
-    {
-        std::cerr << "[info ] [" << where << "] " << msg << std::endl;
+        std::cerr << "[error] [" << tag << "] " << msg << std::endl;
     }
 
-    static inline std::string EcStr(const boost::system::error_code& ec)
+    static inline void LogWarn(const char* tag, const std::string& msg)
     {
-        return std::to_string(ec.value()) + " (" + ec.category().name() + "): " + ec.message();
+        std::cerr << "[warning] [" << tag << "] " << msg << std::endl;
     }
 
-    // ---------- Env ----------
-    static std::optional<std::string> GetEnvPath(const char* name)
+    static inline void LogInfo(const char* tag, const std::string& msg)
     {
-        const char* v = std::getenv(name);
-        if (!v || !*v)
-        {
-            LogErr("env", std::string("env var not set: ") + name);
-            return std::nullopt;
-        }
-        return std::string(v);
+        std::cerr << "[info ] [" << tag << "] " << msg << std::endl;
     }
 
-    static bool LoadMutualTLSClient(ssl::context& ctx)
+    static inline uint32_t ReadBE32(const uint8_t* p)
     {
-        auto ca   = GetEnvPath("MBEDTLS_CA");
-        auto cert = GetEnvPath("MBEDTLS_CERT");
-        auto key  = GetEnvPath("MBEDTLS_KEY");
-        if (!ca || !cert || !key) { return false; }
+        return (uint32_t(p[0]) << 24) | (uint32_t(p[1]) << 16) | (uint32_t(p[2]) << 8) | uint32_t(p[3]);
+    }
 
-        ctx.set_options(ssl::context::default_workarounds |
-                        ssl::context::no_sslv2 |
-                        ssl::context::no_sslv3 |
-                        ssl::context::no_tlsv1 |
-                        ssl::context::no_tlsv1_1);
+    static inline void WriteBE32(uint8_t* p, uint32_t v)
+    {
+        p[0] = uint8_t((v >> 24) & 0xFF);
+        p[1] = uint8_t((v >> 16) & 0xFF);
+        p[2] = uint8_t((v >> 8) & 0xFF);
+        p[3] = uint8_t((v) & 0xFF);
+    }
 
-        ctx.load_verify_file(*ca);
-        ctx.set_verify_mode(ssl::verify_peer);
-        ctx.use_certificate_chain_file(*cert);
-        ctx.use_private_key_file(*key, ssl::context::file_format::pem);
+    // Quick IPv4 parser to extract src/dst. Returns false if not IPv4.
+    static bool ParseIPv4SrcDst(const uint8_t* data, size_t len, uint32_t& src, uint32_t& dst)
+    {
+        if (len < 20) return false;
+        uint8_t vihl = data[0];
+        uint8_t version = vihl >> 4;
+        uint8_t ihl = (vihl & 0x0F) * 4;
+        if (version != 4) return false;
+        if (ihl < 20 || ihl > len) return false;
+        // total length check (optional):
+        // uint16_t totlen = (data[2] << 8) | data[3];
+        // if (totlen > len) return false;
+        std::memcpy(&src, data + 12, 4);
+        std::memcpy(&dst, data + 16, 4);
+        // src/dst are in network byte order now; we keep them as big-endian keys
         return true;
     }
 
-    static bool LoadMutualTLSServer(ssl::context& ctx)
+    // Write/Read framed payloads over TLS: [4-byte big-endian length][payload]
+    template <typename Stream>
+    static bool WriteFrame(Stream& s, const uint8_t* data, size_t len, boost::system::error_code& ec)
     {
-        auto ca   = GetEnvPath("MBEDTLS_CA");
-        auto cert = GetEnvPath("MBEDTLS_CERT");
-        auto key  = GetEnvPath("MBEDTLS_KEY");
-        if (!ca || !cert || !key) { return false; }
-
-        ctx.set_options(ssl::context::default_workarounds |
-                        ssl::context::no_sslv2 |
-                        ssl::context::no_sslv3 |
-                        ssl::context::no_tlsv1 |
-                        ssl::context::no_tlsv1_1);
-
-        ctx.load_verify_file(*ca);
-        ctx.set_verify_mode(ssl::verify_peer | ssl::verify_fail_if_no_peer_cert);
-        ctx.use_certificate_chain_file(*cert);
-        ctx.use_private_key_file(*key, ssl::context::file_format::pem);
-        return true;
+        uint8_t hdr[4];
+        WriteBE32(hdr, static_cast<uint32_t>(len));
+        std::array<boost::asio::const_buffer, 2> bufs {
+                boost::asio::buffer(hdr, 4),
+                boost::asio::buffer(data, len)
+        };
+        boost::asio::write(s, bufs, ec);
+        return !ec;
     }
 
-    // --- Фрейминг: write/read [uint16_be len][payload] ---
-    template<class Stream>
-    static bool WriteFrame(Stream& s, const std::uint8_t* data, std::size_t len)
+    template <typename Stream>
+    static bool ReadFrame(Stream& s, std::vector<uint8_t>& out, boost::system::error_code& ec)
     {
-        if (len > MAX_FRAME)
+        uint8_t hdr[4];
+        boost::asio::read(s, boost::asio::buffer(hdr, 4), ec);
+        if (ec) return false;
+        uint32_t len = ReadBE32(hdr);
+        if (len == 0 || len > (16u * 1024u * 1024u))
         {
-            LogErr("WriteFrame", "payload too large");
+            ec = make_error_code(boost::system::errc::invalid_argument);
             return false;
         }
-        std::uint16_t be_len = htons(static_cast<std::uint16_t>(len));
-        std::array<boost::asio::const_buffer, 2> bufs =
-                {
-                        boost::asio::buffer(&be_len, sizeof(be_len)),
-                        boost::asio::buffer(data, len)
-                };
-        boost::asio::write(s, bufs);
-        return true;
+        out.resize(len);
+        boost::asio::read(s, boost::asio::buffer(out.data(), len), ec);
+        return !ec;
     }
 
-    template<class Stream>
-    static ssize_t ReadFrame(Stream& s, std::uint8_t* out, std::size_t cap,
-                             boost::system::error_code& ec)
+    // Load certs/keys from env (same names user provided even if using OpenSSL under the hood).
+    static bool ConfigureSSLContext(ssl::context& ctx, bool is_server)
     {
-        std::uint16_t be_len = 0;
-        boost::asio::read(s, boost::asio::buffer(&be_len, sizeof(be_len)), ec);
-        if (ec) return -1;
-
-        std::size_t need = ntohs(be_len);
-        if (need > cap)
+        try
         {
-            std::vector<std::uint8_t> trash(need);
-            boost::asio::read(s, boost::asio::buffer(trash.data(), trash.size()), ec);
-            if (!ec) LogWarn("ReadFrame", "frame too large; dropped");
-            return -1;
-        }
+            const char* ca    = std::getenv("MBEDTLS_CA");
+            const char* cert  = std::getenv("MBEDTLS_CERT");
+            const char* pkey  = std::getenv("MBEDTLS_KEY");
+            if (!ca || !cert || !pkey)
+            {
+                LogErr(is_server ? "server" : "client", "Env MBEDTLS_CA/MBEDTLS_CERT/MBEDTLS_KEY must be set");
+                return false;
+            }
 
-        if (need == 0)
+            ctx.set_options(
+                    ssl::context::default_workarounds |
+                    ssl::context::no_sslv2 |
+                    ssl::context::no_sslv3 |
+                    ssl::context::no_tlsv1 |
+                    ssl::context::no_tlsv1_1 |
+                    ssl::context::single_dh_use
+            );
+
+            ctx.set_verify_mode(ssl::verify_peer | (is_server ? ssl::verify_fail_if_no_peer_cert : 0));
+            ctx.load_verify_file(ca);
+            ctx.use_certificate_chain_file(cert);
+            ctx.use_private_key_file(pkey, ssl::context::pem);
+
+            return true;
+        }
+        catch (const std::exception& e)
         {
-            return 0; // keepalive frame
+            LogErr(is_server ? "server" : "client", std::string("SSL ctx error: ") + e.what());
+            return false;
         }
-
-        boost::asio::read(s, boost::asio::buffer(out, need), ec);
-        if (ec) return -1;
-        return static_cast<ssize_t>(need);
     }
 
-    // --- Парсинг IP заголовков для маршрутизации ---
-    enum class PktKind { Unknown, IPv4, IPv6 };
-
-    static PktKind DetectKind(const std::uint8_t* p, std::size_t n)
+    // Sleep helper that ignores signals
+    static void SleepMs(int ms)
     {
-        if (n < 1) return PktKind::Unknown;
-        std::uint8_t v = static_cast<std::uint8_t>(p[0] >> 4);
-        if (v == 4) return PktKind::IPv4;
-        if (v == 6) return PktKind::IPv6;
-        return PktKind::Unknown;
+        std::this_thread::sleep_for(std::chrono::milliseconds(ms));
     }
 
-    static bool ExtractIPv4(const std::uint8_t* p, std::size_t n,
-                            std::string& src, std::string& dst)
-    {
-        if (n < 20) return false;
-        std::uint8_t ihl = static_cast<std::uint8_t>(p[0] & 0x0F) * 4;
-        if (ihl < 20 || n < ihl) return false;
-        std::array<unsigned char, 4> srcb{}, dstb{};
-        std::memcpy(srcb.data(), p + 12, 4);
-        std::memcpy(dstb.data(), p + 16, 4);
-        src = boost::asio::ip::address_v4(srcb).to_string();
-        dst = boost::asio::ip::address_v4(dstb).to_string();
-        return true;
-    }
+    // ------------- CLIENT STATE -------------
 
-    static bool ExtractIPv6(const std::uint8_t* p, std::size_t n,
-                            std::string& src, std::string& dst)
-    {
-        if (n < 40) return false;
-        std::array<unsigned char, 16> srcb{}, dstb{};
-        std::memcpy(srcb.data(), p + 8, 16);
-        std::memcpy(dstb.data(), p + 24, 16);
-        src = boost::asio::ip::address_v6(srcb).to_string();
-        dst = boost::asio::ip::address_v6(dstb).to_string();
-        return true;
-    }
+    boost::asio::io_context                 g_client_io(1);
+    std::unique_ptr<ssl::context>           g_client_ssl;
+    std::shared_ptr<ssl::stream<tcp::socket>> g_client_tls;
+    std::mutex                              g_client_mx;
+    std::atomic<bool>                       g_client_connected{false};
 
-    static bool ExtractSrcDstKey(const std::uint8_t* p, std::size_t n,
-                                 std::string& src, std::string& dst)
-    {
-        PktKind k = DetectKind(p, n);
-        if (k == PktKind::IPv4) return ExtractIPv4(p, n, src, dst);
-        if (k == PktKind::IPv6) return ExtractIPv6(p, n, src, dst);
-        return false;
-    }
+    // ------------- SERVER STATE -------------
 
-    // ---------- CLIENT ----------
-    struct ClientState
-    {
-        std::unique_ptr<boost::asio::io_context> io;
-        std::unique_ptr<ssl::context>           tls_ctx;
-        std::unique_ptr<ssl::stream<tcp::socket>> tls;
-        std::thread up_thread;
-        std::thread down_thread;
-        std::atomic_bool connected{false};
-        std::mutex write_mtx;
-    };
+    boost::asio::io_context                 g_server_io;
+    std::unique_ptr<ssl::context>           g_server_ssl;
+    std::unique_ptr<tcp::acceptor>          g_server_acceptor;
+    std::vector<std::thread>                g_server_threads;
 
-    static ClientState g_client;
-
-    // ---------- SERVER ----------
     struct ServerSession;
-    struct ServerState
+    std::mutex                              g_sess_mx;
+    std::unordered_set<std::shared_ptr<ServerSession>> g_sessions;
+
+    // Map client's inner IPv4 (big-endian key) -> session
+    std::unordered_map<uint32_t, std::weak_ptr<ServerSession>> g_ip_to_session;
+
+    // Queue of frames from clients destined to server's TUN
+    struct TunFrame
     {
-        std::unique_ptr<boost::asio::io_context> io;
-        std::unique_ptr<ssl::context>            tls_ctx;
-        std::unique_ptr<tcp::acceptor>           acceptor;
-
-        std::function<ssize_t(std::uint8_t*, std::size_t)> recv_net;
-        std::function<ssize_t(const std::uint8_t*, std::size_t)> send_net;
-        const volatile sig_atomic_t* working_flag = nullptr;
-
-        std::unordered_set<std::shared_ptr<ServerSession>> sessions;
-        std::mutex sessions_mtx;
-
-        std::unordered_map<std::string, std::weak_ptr<ServerSession>> route; // dest_ip -> session
-        std::mutex route_mtx;
-
-        std::thread accept_thread;
-        std::thread down_thread; // чтение из TUN и отправка клиентам
-        std::mutex tun_write_mtx; // синхронизация send_net
-        std::atomic_bool running{false};
+        std::vector<uint8_t> data;
     };
+    std::mutex              g_tunq_mx;
+    std::condition_variable g_tunq_cv;
+    std::deque<TunFrame>    g_to_tun_q;
 
-    struct ServerSession : std::enable_shared_from_this<ServerSession>
+    volatile const sig_atomic_t*            g_server_working_flag = nullptr;
+
+    struct ServerSession : public std::enable_shared_from_this<ServerSession>
     {
-        std::unique_ptr<ssl::stream<tcp::socket>> tls;
-        ServerState* parent = nullptr;
-        std::thread up_thread; // чтение от клиента -> TUN
-        std::mutex write_mtx;
-        std::atomic_bool alive{true};
+        explicit ServerSession(ssl::context& ctx)
+                : tls(g_server_io, ctx)
+        {
+        }
 
-        explicit ServerSession(std::unique_ptr<ssl::stream<tcp::socket>> s, ServerState* p)
-                : tls(std::move(s)), parent(p) {}
+        ssl::stream<tcp::socket> tls;
+        std::atomic<bool>         alive{false};
+        std::string               peer;
 
         void Start()
         {
             auto self = shared_from_this();
-            up_thread = std::thread([self]()
+            tls.set_verify_mode(ssl::verify_peer | ssl::verify_fail_if_no_peer_cert);
+            tls.lowest_layer().set_option(tcp::no_delay(true));
+            alive.store(true);
+            tls.async_handshake(ssl::stream_base::server,
+                                [self](const boost::system::error_code& ec)
+                                {
+                                    if (ec)
                                     {
-                                        std::vector<std::uint8_t> buf(MAX_FRAME);
-                                        while (self->alive.load())
-                                        {
-                                            boost::system::error_code ec;
-                                            ssize_t got = ReadFrame(*self->tls, buf.data(), buf.size(), ec);
-                                            if (ec)
-                                            {
-                                                if (!self->alive.load()) break;
-                                                if (ec == boost::asio::ssl::error::stream_truncated ||
-                                                    ec == boost::asio::error::eof ||
-                                                    ec == boost::asio::error::operation_aborted)
-                                                {
-                                                    LogWarn("server.session", std::string("read EOF/aborted: ") + EcStr(ec));
-                                                }
-                                                else
-                                                {
-                                                    LogWarn("server.session", std::string("read error: ") + EcStr(ec));
-                                                }
-                                                break;
-                                            }
-                                            if (got < 0) continue;
-                                            if (got > 0)
-                                            {
-                                                server_from_client_bytes.fetch_add(static_cast<std::uint64_t>(got),
-                                                                                   std::memory_order_relaxed);
-                                                LogInfo("server.session", "from client: " + std::to_string(got)
-                                                                          + " B; server_from_client_total=" +
-                                                                          std::to_string(
-                                                                                  server_from_client_bytes.load()) +
-                                                                          " B");
-                                            }
-
-
-                                            // Обновить маршрут: source IP -> эта сессия
-                                            if (got > 0)
-                                            {
-                                                std::string src_key, dst_dummy;
-                                                if (ExtractSrcDstKey(buf.data(), static_cast<std::size_t>(got), src_key, dst_dummy))
-                                                {
-                                                    std::lock_guard<std::mutex> lk(self->parent->route_mtx);
-                                                    self->parent->route[src_key] = self;
-                                                }
-                                            }
-
-                                            // Записать в TUN
-                                            if (got > 0)
-                                            {
-                                                std::lock_guard<std::mutex> lk(self->parent->tun_write_mtx);
-                                                ssize_t wr = self->parent->send_net(buf.data(), static_cast<std::size_t>(got));
-                                                if (wr > 0)
-                                                {
-                                                    server_send_net_bytes.fetch_add(static_cast<std::uint64_t>(wr),
-                                                                                    std::memory_order_relaxed);
-                                                    LogInfo("server.session", "send_to_net: " + std::to_string(wr)
-                                                                              + " B; server_send_net_total=" +
-                                                                              std::to_string(
-                                                                                      server_send_net_bytes.load()) +
-                                                                              " B");
-                                                }
-
-                                                if (wr < 0)
-                                                {
-                                                    LogWarn("server.session", "send_to_net returned error");
-                                                }
-                                            }
-                                        }
+                                        LogWarn("server", std::string("TLS handshake failed: ") + ec.message());
                                         self->alive.store(false);
-                                    });
+                                        return;
+                                    }
+                                    try
+                                    {
+                                        self->peer = self->tls.lowest_layer().remote_endpoint().address().to_string();
+                                    }
+                                    catch (...) { self->peer = "unknown"; }
+                                    LogInfo("server", std::string("TLS handshake complete; new client from ") + self->peer);
+                                    self->ReadLoop();
+                                });
         }
 
-        bool WriteToClient(const std::uint8_t* data, std::size_t len)
+        void ReadLoop()
         {
-            std::lock_guard<std::mutex> lk(write_mtx);
-            try
+            auto self = shared_from_this();
+            // Read frames forever; on any error, log and keep trying (if working flag is set).
+            boost::asio::post(g_server_io, [self]
             {
-                return WriteFrame(*tls, data, len);
-            }
-            catch (const boost::system::system_error& se)
+                std::vector<uint8_t> buf;
+                while (self->alive.load())
+                {
+                    if (g_server_working_flag && *g_server_working_flag == 0)
+                    {
+                        break;
+                    }
+                    boost::system::error_code ec;
+                    bool ok = ReadFrame(self->tls, buf, ec);
+                    if (!ok)
+                    {
+                        LogWarn("server.down", std::string("read error: ") + ec.message());
+                        // Simple backoff to avoid tight loop on dead socket:
+                        SleepMs(100);
+                        continue;
+                    }
+
+                    // Learn mapping: client's *source* IPv4 is this session's inner address.
+                    uint32_t src_be = 0, dst_be = 0;
+                    if (ParseIPv4SrcDst(buf.data(), buf.size(), src_be, dst_be))
+                    {
+                        std::lock_guard<std::mutex> lk(g_sess_mx);
+                        g_ip_to_session[src_be] = self;
+                    }
+
+                    // Push to TUN queue
+                    {
+                        std::lock_guard<std::mutex> ql(g_tunq_mx);
+                        g_to_tun_q.push_back(TunFrame{buf});
+                    }
+                    g_tunq_cv.notify_one();
+                }
+            });
+        }
+
+        // Send one framed payload to this client.
+        void Send(const uint8_t* data, size_t len)
+        {
+            auto self = shared_from_this();
+            boost::asio::post(g_server_io, [self, p = std::vector<uint8_t>(data, data + len)]() mutable
             {
-                LogWarn("server.session", std::string("write error: ") + EcStr(se.code()));
-                return false;
-            }
-            catch (const std::exception& e)
-            {
-                LogWarn("server.session", std::string("write exception: ") + e.what());
-                return false;
-            }
+                if (!self->alive.load())
+                    return;
+                boost::system::error_code ec;
+                if (!WriteFrame(self->tls, p.data(), p.size(), ec))
+                {
+                    LogWarn("server.up", std::string("write error: ") + ec.message());
+                    // Do not close; just keep alive flag; next writes may fail again.
+                }
+            });
         }
 
         void Close()
         {
             alive.store(false);
-            try { tls->lowest_layer().shutdown(tcp::socket::shutdown_both); } catch (...) {}
-            try { tls->lowest_layer().close(); } catch (...) {}
-            if (up_thread.joinable()) up_thread.join();
+            boost::system::error_code ignored;
+            self_shutdown(ignored);
+        }
+
+        void self_shutdown(boost::system::error_code& ignored)
+        {
+            boost::system::error_code ec1;
+            tls.shutdown(ec1); // TLS close_notify
+            boost::system::error_code ec2;
+            tls.lowest_layer().shutdown(tcp::socket::shutdown_both, ec2);
+            boost::system::error_code ec3;
+            tls.lowest_layer().close(ec3);
         }
     };
 
-    static ServerState g_server;
-
-    // ---------- CLIENT API ----------
-    bool Client_Connect(const std::string& server_ip, std::uint16_t port) noexcept
+    // Accept loop (runs in server io threads)
+    static void ServerAcceptLoop(std::shared_ptr<bool> accepting_guard)
     {
-        try
+        if (!g_server_acceptor) return;
+
+        auto new_sess = std::make_shared<ServerSession>(*g_server_ssl);
+        g_server_acceptor->async_accept(new_sess->tls.lowest_layer(),
+                                        [accepting_guard, new_sess](const boost::system::error_code& ec)
+                                        {
+                                            if (ec)
+                                            {
+                                                LogWarn("server", std::string("accept error: ") + ec.message());
+                                            }
+                                            else
+                                            {
+                                                {
+                                                    std::lock_guard<std::mutex> lk(g_sess_mx);
+                                                    g_sessions.insert(new_sess);
+                                                }
+                                                new_sess->Start();
+                                            }
+
+                                            // Continue accepting
+                                            ServerAcceptLoop(accepting_guard);
+                                        });
+    }
+
+    // Send frame from server's TUN to a specific client (by dst IPv4)
+    static void ServerSendToClientByDst(const uint8_t* data, size_t len)
+    {
+        uint32_t src_be = 0, dst_be = 0;
+        if (!ParseIPv4SrcDst(data, len, src_be, dst_be))
         {
-            if (g_client.connected.load())
-            {
-                LogWarn("client", "already connected");
-                return true;
-            }
-
-            g_client.io      = std::make_unique<boost::asio::io_context>();
-            g_client.tls_ctx = std::make_unique<ssl::context>(ssl::context::tls_client);
-
-            if (!LoadMutualTLSClient(*g_client.tls_ctx))
-            {
-                LogErr("client", "TLS context init failed");
-                return false;
-            }
-
-            g_client.tls = std::make_unique<ssl::stream<tcp::socket>>(*g_client.io, *g_client.tls_ctx);
-
-            tcp::resolver res(*g_client.io);
-            auto results = res.resolve(server_ip, std::to_string(port));
-            boost::asio::connect(g_client.tls->lowest_layer(), results);
-
-            // Тюнинг
-            g_client.tls->lowest_layer().set_option(tcp::no_delay(true));
-            g_client.tls->lowest_layer().set_option(boost::asio::socket_base::keep_alive(true));
-
-            g_client.tls->handshake(ssl::stream_base::client);
-
-            g_client.connected.store(true);
-            LogInfo("client", "TLS handshake complete (client)");
-            return true;
+            LogWarn("server.up", "non-IPv4 packet from TUN; dropped");
+            return;
         }
-        catch (const std::exception& e)
+
+        std::shared_ptr<ServerSession> target;
         {
-            LogErr("client", std::string("connect failed: ") + e.what());
-            g_client.connected.store(false);
+            std::lock_guard<std::mutex> lk(g_sess_mx);
+            auto it = g_ip_to_session.find(dst_be);
+            if (it != g_ip_to_session.end())
+            {
+                target = it->second.lock();
+                if (!target)
+                {
+                    g_ip_to_session.erase(it);
+                }
+            }
+        }
+        if (target)
+        {
+            target->Send(data, len);
+        }
+        else
+        {
+            // No mapping yet; drop (strict "only to intended client" rule).
+            struct in_addr ina;
+            ina.s_addr = dst_be;
+            LogWarn("server.up", std::string("no session for dst=") + inet_ntoa(ina) + "; dropped");
+        }
+    }
+} // anonymous namespace
+
+extern "C" bool Client_Connect(const std::string &server_ip, std::uint16_t port) noexcept
+{
+    try
+    {
+        std::lock_guard<std::mutex> lk(g_client_mx);
+        if (!g_client_ssl)
+        {
+            g_client_ssl = std::make_unique<ssl::context>(ssl::context::tls_client);
+            if (!ConfigureSSLContext(*g_client_ssl, false))
+                return false;
+        }
+
+        g_client_tls = std::make_shared<ssl::stream<tcp::socket>>(g_client_io, *g_client_ssl);
+        boost::system::error_code ec;
+
+        tcp::resolver resolver(g_client_io);
+        auto results = resolver.resolve(server_ip, std::to_string(port), ec);
+        if (ec)
+        {
+            LogErr("client", std::string("resolve failed: ") + ec.message());
             return false;
         }
-    }
 
-    void Client_Disconnect() noexcept
-    {
-        try
+        boost::asio::connect(g_client_tls->lowest_layer(), results, ec);
+        if (ec)
         {
-            if (!g_client.connected.load()) return;
-
-            try { g_client.tls->lowest_layer().shutdown(tcp::socket::shutdown_both); } catch (...) {}
-            try { g_client.tls->lowest_layer().close(); } catch (...) {}
-
-            if (g_client.up_thread.joinable())   g_client.up_thread.join();
-            if (g_client.down_thread.joinable()) g_client.down_thread.join();
-
-            g_client.tls.reset();
-            g_client.tls_ctx.reset();
-            g_client.io.reset();
-            g_client.connected.store(false);
-            LogInfo("client", "disconnected");
-        }
-        catch (...) { /* noexcept */ }
-    }
-
-    int Client_Serve(
-            const std::function<ssize_t(std::uint8_t*, std::size_t)>& receive_from_net,
-            const std::function<ssize_t(const std::uint8_t*, std::size_t)>& send_to_net,
-            const volatile sig_atomic_t* working_flag) noexcept
-    {
-        if (!working_flag)
-        {
-            LogErr("client.serve", "working_flag is null");
-            return -1;
-        }
-        if (*working_flag == 0)
-        {
-            LogWarn("client.serve", "working_flag==0 at entry; refusing to start");
-            return -2;
-        }
-        if (!g_client.connected.load())
-        {
-            LogErr("client", "not connected");
-            return -1;
-        }
-
-        try
-        {
-            std::atomic_bool running{true};
-
-            // Вверх: TUN -> сервер (TLS)
-            g_client.up_thread = std::thread([&]()
-                                             {
-                                                 std::vector<std::uint8_t> buf(MAX_FRAME);
-                                                 while (running.load() && *working_flag)
-                                                 {
-                                                     ssize_t got = receive_from_net(buf.data(), buf.size());
-                                                     if (got > 0)
-                                                     {
-                                                         client_recv_net_bytes.fetch_add(
-                                                                 static_cast<std::uint64_t>(got),
-                                                                 std::memory_order_relaxed);
-                                                         LogInfo("client.up", "receive_from_net: " + std::to_string(got)
-                                                                              + " B; client_recv_net_total=" +
-                                                                              std::to_string(
-                                                                                      client_recv_net_bytes.load()) +
-                                                                              " B");
-                                                     }
-
-                                                     if (got < 0)
-                                                     {
-                                                         LogWarn("client.up", "receive_from_net error");
-                                                         continue;
-                                                     }
-                                                     if (got == 0) { continue; }
-                                                     std::lock_guard<std::mutex> lk(g_client.write_mtx);
-                                                     try
-                                                     {
-                                                         bool ok = WriteFrame(*g_client.tls, buf.data(), static_cast<std::size_t>(got));
-                                                         if (!ok)
-                                                         {
-                                                             LogWarn("client.up", "WriteFrame failed");
-                                                             break;
-                                                         }
-                                                         client_to_server_bytes.fetch_add(static_cast<std::uint64_t>(got), std::memory_order_relaxed);
-                                                         LogInfo("client.up", "to server: " + std::to_string(got)
-                                                            + " B; client_to_server_total=" + std::to_string(client_to_server_bytes.load()) + " B");
-                                                     }
-                                                     catch (const boost::system::system_error& se)
-                                                     {
-                                                         LogWarn("client.up", std::string("write error ") + EcStr(se.code()));
-                                                         break;
-                                                     }
-                                                     catch (const std::exception& e)
-                                                     {
-                                                         LogWarn("client.up", std::string("write exception: ") + e.what());
-                                                         break;
-                                                     }
-                                                 }
-                                             });
-
-            // Вниз: сервер (TLS) -> TUN
-            g_client.down_thread = std::thread([&]()
-                                               {
-                                                   std::vector<std::uint8_t> buf(MAX_FRAME);
-                                                   while (running.load() && *working_flag)
-                                                   {
-                                                       boost::system::error_code ec;
-                                                       ssize_t got = ReadFrame(*g_client.tls, buf.data(), buf.size(), ec);
-                                                       if (ec)
-                                                       {
-                                                           if (!running.load() || !*working_flag)
-                                                               break; // штатная остановка
-                                                           const bool is_ssl_short_read =
-                                                                   (ec.category().name() &&
-                                                                    std::string(ec.category().name()) ==
-                                                                    std::string("asio.ssl.stream")
-                                                                    && (ec.value() == 1 /*stream_truncated*/ ||
-                                                                        ec.value() == 2 /*short read/unspecified*/));
-                                                           const bool is_eof_like =
-                                                                   is_ssl_short_read ||
-                                                                   ec == boost::asio::ssl::error::stream_truncated ||
-                                                                   ec == boost::asio::error::eof ||
-                                                                   ec == boost::asio::error::operation_aborted;
-                                                           LogWarn("client.down",
-                                                                   std::string(is_eof_like ? "read EOF/aborted: "
-                                                                                           : "read error ")
-                                                                   + EcStr(ec) + " {cat=" + ec.category().name() +
-                                                                   ", val=" + std::to_string(ec.value()) + "}");
-                                                           break;
-                                                       }
-                                                       if (got <= 0) { continue; }
-                                                       client_from_server_bytes.fetch_add(static_cast<std::uint64_t>(got), std::memory_order_relaxed);
-                                                       LogInfo("client.down", "from server: " + std::to_string(got)
-                                                            + " B; client_from_server_total=" + std::to_string(client_from_server_bytes.load()) + " B");
-
-                                                       ssize_t wr = send_to_net(buf.data(), static_cast<std::size_t>(got));
-                                                       if (wr > 0)
-                                                       {
-                                                           client_send_net_bytes.fetch_add(
-                                                                   static_cast<std::uint64_t>(wr),
-                                                                   std::memory_order_relaxed);
-                                                           LogInfo("client.down", "send_to_net: " + std::to_string(wr)
-                                                                                  + " B; client_send_net_total=" +
-                                                                                  std::to_string(
-                                                                                          client_send_net_bytes.load()) +
-                                                                                  " B");
-                                                       }
-                                                       if (wr < 0)
-                                                       {
-                                                           LogWarn("client.down", "send_to_net error");
-                                                       }
-                                                   }
-                                               });
-
-            // Блокирующее ожидание остановки
-            while (*working_flag) { std::this_thread::sleep_for(std::chrono::milliseconds(50)); }
-            running.store(false);
-
-            // Разбудить блокирующие read()/write()
-            try { g_client.tls->lowest_layer().cancel(); } catch (...) {}
-            try { g_client.tls->lowest_layer().shutdown(tcp::socket::shutdown_both); } catch (...) {}
-            try { g_client.tls->lowest_layer().close(); } catch (...) {}
-
-            if (g_client.up_thread.joinable())   g_client.up_thread.join();
-            if (g_client.down_thread.joinable()) g_client.down_thread.join();
-
-            return 0;
-        }
-        catch (const std::exception& e)
-        {
-            LogErr("client.serve", e.what());
-            return -1;
-        }
-    }
-
-    // ---------- SERVER API ----------
-    bool Server_Bind(std::uint16_t port) noexcept
-    {
-        try
-        {
-            if (g_server.running.load())
-            {
-                LogWarn("server", "already running");
-                return true;
-            }
-
-            g_server.io      = std::make_unique<boost::asio::io_context>();
-            g_server.tls_ctx = std::make_unique<ssl::context>(ssl::context::tls_server);
-
-            if (!LoadMutualTLSServer(*g_server.tls_ctx))
-            {
-                LogErr("server", "TLS context init failed");
-                return false;
-            }
-
-            tcp::endpoint ep(tcp::v4(), port);
-            g_server.acceptor = std::make_unique<tcp::acceptor>(*g_server.io);
-            g_server.acceptor->open(ep.protocol());
-            g_server.acceptor->set_option(tcp::acceptor::reuse_address(true));
-            g_server.acceptor->bind(ep);
-            g_server.acceptor->listen();
-
-            LogInfo("server", "bind ok");
-            return true;
-        }
-        catch (const std::exception& e)
-        {
-            LogErr("server.bind", e.what());
+            LogErr("client", std::string("connect failed: ") + ec.message());
             return false;
         }
-    }
 
-    int Server_Serve(
-            const std::function<ssize_t(std::uint8_t*, std::size_t)>& receive_from_net,
-            const std::function<ssize_t(const std::uint8_t*, std::size_t)>& send_to_net,
-            const volatile sig_atomic_t* working_flag) noexcept
+        g_client_tls->set_verify_mode(ssl::verify_peer);
+        g_client_tls->lowest_layer().set_option(tcp::no_delay(true));
+
+        g_client_tls->handshake(ssl::stream_base::client, ec);
+        if (ec)
+        {
+            LogErr("client", std::string("TLS handshake failed: ") + ec.message());
+            return false;
+        }
+        LogInfo("client", "TLS handshake complete (client)");
+
+        g_client_connected.store(true);
+        return true;
+    }
+    catch (const std::exception& e)
     {
-        if (!working_flag)
+        LogErr("client", std::string("exception in Client_Connect: ") + e.what());
+        return false;
+    }
+}
+
+extern "C" void Client_Disconnect() noexcept
+{
+    std::lock_guard<std::mutex> lk(g_client_mx);
+    if (!g_client_tls) return;
+
+    boost::system::error_code ec1, ec2, ec3;
+    g_client_tls->shutdown(ec1);
+    g_client_tls->lowest_layer().shutdown(tcp::socket::shutdown_both, ec2);
+    g_client_tls->lowest_layer().close(ec3);
+    g_client_connected.store(false);
+    LogInfo("client", "disconnected");
+}
+
+extern "C" int Client_Serve(
+        const std::function<ssize_t(std::uint8_t *, std::size_t)> &receive_from_net,
+        const std::function<ssize_t(const std::uint8_t *, std::size_t)> &send_to_net,
+        const volatile sig_atomic_t *working_flag) noexcept
+{
+    if (!working_flag)
+    {
+        LogErr("client", "working_flag is null");
+        return -1;
+    }
+    if (!g_client_tls)
+    {
+        LogErr("client", "not connected");
+        return -2;
+    }
+
+    std::atomic<bool> run{true};
+
+    // Uplink thread: TUN -> server
+    std::thread up_thr([&]
+                       {
+                           std::vector<uint8_t> buf(65536);
+                           while (run.load())
+                           {
+                               if (*working_flag == 0) break;
+                               ssize_t n = receive_from_net(buf.data(), buf.size());
+                               if (n <= 0)
+                               {
+                                   LogWarn("client.up", std::string("receive_from_net error or EOF: ") + std::to_string(n));
+                                   SleepMs(10);
+                                   continue;
+                               }
+                               boost::system::error_code ec;
+                               if (!WriteFrame(*g_client_tls, buf.data(), static_cast<size_t>(n), ec))
+                               {
+                                   LogWarn("client.up", std::string("write error ") + ec.message());
+                                   SleepMs(50);
+                                   continue;
+                               }
+                           }
+                       });
+
+    // Downlink thread: server -> TUN
+    std::thread down_thr([&]
+                         {
+                             std::vector<uint8_t> frame;
+                             while (run.load())
+                             {
+                                 if (*working_flag == 0) break;
+                                 boost::system::error_code ec;
+                                 bool ok = ReadFrame(*g_client_tls, frame, ec);
+                                 if (!ok)
+                                 {
+                                     LogWarn("client.down", std::string("read error ") + ec.message());
+                                     SleepMs(50);
+                                     continue;
+                                 }
+                                 ssize_t w = send_to_net(frame.data(), frame.size());
+                                 if (w < 0)
+                                 {
+                                     LogWarn("client.down", "send_to_net returned error");
+                                     // continue
+                                 }
+                             }
+                         });
+
+    // Busy-wait loop to keep this call blocking
+    while (*working_flag)
+    {
+        SleepMs(50);
+    }
+
+    run.store(false);
+    try { if (up_thr.joinable()) up_thr.join(); } catch (...) {}
+    try { if (down_thr.joinable()) down_thr.join(); } catch (...) {}
+
+    LogInfo("client", "Serve end rc=0");
+    return 0;
+}
+
+extern "C" bool Server_Bind(std::uint16_t port) noexcept
+{
+    try
+    {
+        if (!g_server_ssl)
         {
-            LogErr("server.serve", "working_flag is null");
-            return -1;
+            g_server_ssl = std::make_unique<ssl::context>(ssl::context::tls_server);
+            if (!ConfigureSSLContext(*g_server_ssl, true))
+                return false;
         }
-        if (*working_flag == 0)
+
+        if (!g_server_acceptor)
         {
-            LogWarn("server.serve", "working_flag==0 at entry; refusing to start");
-            return -2;
-        }
-        if (!g_server.acceptor)
-        {
-            LogErr("server", "not bound");
-            return -1;
+            g_server_acceptor = std::make_unique<tcp::acceptor>(g_server_io);
         }
 
-        g_server.recv_net    = receive_from_net;
-        g_server.send_net    = send_to_net;
-        g_server.working_flag= working_flag;
-        g_server.running.store(true);
+        tcp::endpoint ep(tcp::v4(), port);
+        boost::system::error_code ec;
+        g_server_acceptor->open(ep.protocol(), ec);
+        if (ec) { LogErr("server", std::string("acceptor open: ") + ec.message()); return false; }
 
-        try
+        g_server_acceptor->set_option(boost::asio::socket_base::reuse_address(true), ec);
+        if (ec) { LogWarn("server", std::string("reuse_address: ") + ec.message()); }
+
+        g_server_acceptor->bind(ep, ec);
+        if (ec) { LogErr("server", std::string("bind: ") + ec.message()); return false; }
+
+        g_server_acceptor->listen(boost::asio::socket_base::max_listen_connections, ec);
+        if (ec) { LogErr("server", std::string("listen: ") + ec.message()); return false; }
+
+        // Start io threads (choose count ~ hardware concurrency)
+        if (g_server_threads.empty())
         {
-            // Поток приёма соединений
-            g_server.accept_thread = std::thread([&]()
-                                                 {
-                                                     while (g_server.running.load() && *g_server.working_flag)
-                                                     {
-                                                         try
-                                                         {
-                                                             tcp::socket sock(*g_server.io);
-                                                             g_server.acceptor->accept(sock);
-
-                                                             auto tls = std::make_unique<ssl::stream<tcp::socket>>(std::move(sock), *g_server.tls_ctx);
-                                                             tls->set_verify_mode(ssl::verify_peer | ssl::verify_fail_if_no_peer_cert);
-                                                             tls->handshake(ssl::stream_base::server);
-
-                                                             // Тюнинг сокета
-                                                             tls->lowest_layer().set_option(tcp::no_delay(true));
-                                                             tls->lowest_layer().set_option(boost::asio::socket_base::keep_alive(true));
-
-                                                             auto sess = std::make_shared<ServerSession>(std::move(tls), &g_server);
-                                                             {
-                                                                 std::lock_guard<std::mutex> lk(g_server.sessions_mtx);
-                                                                 g_server.sessions.insert(sess);
-                                                             }
-                                                             LogInfo("server", "TLS handshake complete (server); new client");
-
-                                                             // Keepalive: нулевой фрейм
-                                                             try
-                                                             {
-                                                                 std::lock_guard<std::mutex> lk(sess->write_mtx);
-                                                                 std::uint8_t dummy = 0;
-                                                                 WriteFrame(*sess->tls, &dummy, 0);
-                                                                 LogInfo("server", "sent keepalive frame to new client");
-                                                             }
-                                                             catch (const std::exception& e)
-                                                             {
-                                                                 LogWarn("server", std::string("keepalive send failed: ") + e.what());
-                                                             }
-
-                                                             sess->Start();
-                                                         }
-                                                         catch (const boost::system::system_error& se)
-                                                         {
-                                                             if (g_server.running.load() && *g_server.working_flag)
-                                                             {
-                                                                 LogWarn("server.accept", EcStr(se.code()));
-                                                             }
-                                                             else { break; }
-                                                         }
-                                                         catch (const std::exception& e)
-                                                         {
-                                                             if (g_server.running.load() && *g_server.working_flag)
-                                                             {
-                                                                 LogWarn("server.accept", e.what());
-                                                             }
-                                                             else { break; }
-                                                         }
-                                                     }
-                                                 });
-
-            // Поток чтения из TUN и отправки конкретным клиентам
-            g_server.down_thread = std::thread([&]()
-                                               {
-                                                   std::vector<std::uint8_t> buf(MAX_FRAME);
-                                                   while (g_server.running.load() && *g_server.working_flag)
-                                                   {
-                                                       ssize_t got = g_server.recv_net(buf.data(), buf.size());
-                                                       if (got < 0)
-                                                       {
-                                                           LogWarn("server.down", "receive_from_net error");
-                                                           continue;
-                                                       }
-                                                       if (got == 0) continue;
-                                                       server_recv_net_bytes.fetch_add(static_cast<std::uint64_t>(got), std::memory_order_relaxed);
-                                                       LogInfo("server.down", "receive_from_net: " + std::to_string(got)
-                                                            + " B; server_recv_net_total=" + std::to_string(server_recv_net_bytes.load()) + " B");
-
-                                                       std::string src_key, dst_key;
-                                                       if (!ExtractSrcDstKey(buf.data(), static_cast<std::size_t>(got), src_key, dst_key))
-                                                       {
-                                                           LogWarn("server.down", "unknown packet kind; drop");
-                                                           continue;
-                                                       }
-
-                                                       std::shared_ptr<ServerSession> target;
-                                                       {
-                                                           std::lock_guard<std::mutex> lk(g_server.route_mtx);
-                                                           auto it = g_server.route.find(dst_key);
-                                                           if (it != g_server.route.end())
-                                                           {
-                                                               target = it->second.lock();
-                                                               if (!target) { g_server.route.erase(it); }
-                                                           }
-                                                       }
-
-                                                       if (target)
-                                                       {
-                                                           bool ok2 = target->WriteToClient(buf.data(), static_cast<std::size_t>(got));
-                                                           if (!ok2)
-                                                           {
-                                                               LogWarn("server.down", "write to client failed");
-                                                           }
-                                                               else
-                                                           {
-                                                               server_to_client_bytes.fetch_add(
-                                                                       static_cast<std::uint64_t>(got),
-                                                                       std::memory_order_relaxed);
-                                                               LogInfo("server.down",
-                                                                       "to client: " + std::to_string(got)
-                                                                       + " B; server_to_client_total=" +
-                                                                       std::to_string(server_to_client_bytes.load()) +
-                                                                       " B");
-                                                           }
-                                                       }
-                                                       else
-                                                       {
-                                                           LogWarn("server.down", "no route for dest=" + dst_key + " (drop)");
-                                                       }
-                                                   }
-                                               });
-
-            // Блокируемся до остановки
-            while (*working_flag) { std::this_thread::sleep_for(std::chrono::milliseconds(50)); }
-            g_server.running.store(false);
-
-            // Прервать блокирующие операции
-            try { g_server.acceptor->close(); } catch (...) {}
-
-            if (g_server.accept_thread.joinable()) g_server.accept_thread.join();
-            if (g_server.down_thread.joinable())   g_server.down_thread.join();
-
-            // Закрыть все сессии
+            unsigned n = std::max(2u, std::thread::hardware_concurrency());
+            for (unsigned i = 0; i < n; ++i)
             {
-                std::lock_guard<std::mutex> lk(g_server.sessions_mtx);
-                for (auto& s : g_server.sessions) { s->Close(); }
-                g_server.sessions.clear();
+                g_server_threads.emplace_back([]
+                                              {
+                                                  try { g_server_io.run(); }
+                                                  catch (const std::exception& e) { LogErr("server", std::string("io thread exception: ") + e.what()); }
+                                              });
             }
-            return 0;
         }
-        catch (const std::exception& e)
+
+        // Begin accepting
+        ServerAcceptLoop(std::make_shared<bool>(true));
+        LogInfo("server", "listening");
+        return true;
+    }
+    catch (const std::exception& e)
+    {
+        LogErr("server", std::string("exception in Server_Bind: ") + e.what());
+        return false;
+    }
+}
+
+extern "C" int Server_Serve(
+        const std::function<ssize_t(std::uint8_t *, std::size_t)> &receive_from_net,
+        const std::function<ssize_t(const std::uint8_t *, std::size_t)> &send_to_net,
+        const volatile sig_atomic_t *working_flag) noexcept
+{
+    if (!working_flag)
+    {
+        LogErr("server", "working_flag is null");
+        return -1;
+    }
+    g_server_working_flag = working_flag;
+
+    // Thread 1: dequeue frames from clients and write to TUN
+    std::atomic<bool> run{true};
+    std::thread to_tun_thread([&]
+                              {
+                                  while (run.load())
+                                  {
+                                      if (*working_flag == 0) break;
+
+                                      std::unique_lock<std::mutex> lk(g_tunq_mx);
+                                      if (g_to_tun_q.empty())
+                                      {
+                                          g_tunq_cv.wait_for(lk, std::chrono::milliseconds(50));
+                                          if (g_to_tun_q.empty())
+                                              continue;
+                                      }
+                                      TunFrame f = std::move(g_to_tun_q.front());
+                                      g_to_tun_q.pop_front();
+                                      lk.unlock();
+
+                                      ssize_t w = send_to_net(f.data.data(), f.data.size());
+                                      if (w < 0)
+                                      {
+                                          LogWarn("server.down", "send_to_net returned error");
+                                      }
+                                  }
+                              });
+
+    // Thread 2: read from TUN and route only to intended client
+    std::thread from_tun_thread([&]
+                                {
+                                    std::vector<uint8_t> buf(65536);
+                                    while (run.load())
+                                    {
+                                        if (*working_flag == 0) break;
+                                        ssize_t n = receive_from_net(buf.data(), buf.size());
+                                        if (n <= 0)
+                                        {
+                                            LogWarn("server.up", std::string("receive_from_net error or EOF: ") + std::to_string(n));
+                                            SleepMs(10);
+                                            continue;
+                                        }
+                                        ServerSendToClientByDst(buf.data(), static_cast<size_t>(n));
+                                    }
+                                });
+
+    // Keep this call blocking
+    while (*working_flag)
+    {
+        SleepMs(50);
+    }
+
+    run.store(false);
+    g_server_working_flag = nullptr;
+
+    try { if (to_tun_thread.joinable()) to_tun_thread.join(); } catch (...) {}
+    try { if (from_tun_thread.joinable()) from_tun_thread.join(); } catch (...) {}
+
+    // Stop accepting new clients and close sessions gracefully
+    try
+    {
+        if (g_server_acceptor)
         {
-            LogErr("server.serve", e.what());
-            g_server.running.store(false);
-            return -1;
+            boost::system::error_code ec;
+            g_server_acceptor->close(ec);
         }
     }
-} // namespace ff
+    catch (...) {}
 
-// ---------- C ABI EXPORTS ----------
-PLUGIN_API bool Client_Connect(const std::string& server_ip, std::uint16_t port) noexcept
-{
-    return ff::Client_Connect(server_ip, port);
-}
-PLUGIN_API void Client_Disconnect() noexcept
-{
-    ff::Client_Disconnect();
-}
-PLUGIN_API int Client_Serve(
-        const std::function<ssize_t(std::uint8_t*, std::size_t)>& receive_from_net,
-        const std::function<ssize_t(const std::uint8_t*, std::size_t)>& send_to_net,
-        const volatile sig_atomic_t* working_flag) noexcept
-{
-    return ff::Client_Serve(receive_from_net, send_to_net, working_flag);
-}
+    {
+        std::lock_guard<std::mutex> lk(g_sess_mx);
+        for (auto& s : g_sessions)
+        {
+            if (s) s->alive.store(false);
+        }
+    }
 
-PLUGIN_API bool Server_Bind(std::uint16_t port) noexcept
-{
-    return ff::Server_Bind(port);
-}
-PLUGIN_API int Server_Serve(
-        const std::function<ssize_t(std::uint8_t*, std::size_t)>& receive_from_net,
-        const std::function<ssize_t(const std::uint8_t*, std::size_t)>& send_to_net,
-        const volatile sig_atomic_t* working_flag) noexcept
-{
-    return ff::Server_Serve(receive_from_net, send_to_net, working_flag);
+    // Stop io context
+    try { g_server_io.stop(); } catch (...) {}
+
+    for (auto& t : g_server_threads)
+    {
+        try { if (t.joinable()) t.join(); } catch (...) {}
+    }
+    g_server_threads.clear();
+
+    LogInfo("server", "Serve end rc=0");
+    return 0;
 }
