@@ -42,14 +42,14 @@ namespace NetConfig
         int mtu = 1400; ///< MTU интерфейса.
 
         /// Адрес шлюза TUN и префикс пула (без peer) для IPv4.
-        CidrV4 v4_local{ inet_addr("10.8.0.1"), 24 };
+        CidrV4 v4_local{ inet_addr("10.200.0.1"), 24 };
 
         /// Адрес шлюза TUN и префикс пула для IPv6.
         CidrV6 v6_local{ /* fd00:dead:beef::1/64 */
             { 0xfd,0x00,0xde,0xad,0xbe,0xef,0,0,0,0,0,0,0,0,0,1 }, 64
         };
 
-        std::string nat44_src = "10.8.0.0/24";        ///< Исходный CIDR для NAT44.
+        std::string nat44_src = "10.200.0.0/22";      ///< Исходный CIDR для NAT44.
         std::string nat66_src = "fd00:dead:beef::/64";///< Исходный CIDR для NAT66.
     };
 

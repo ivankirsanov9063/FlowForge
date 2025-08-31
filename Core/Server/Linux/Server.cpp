@@ -38,7 +38,7 @@ static int ServerMain(int argc, char **argv)
     std::string plugin_path = "./libPlugSRT.so";
 
     // Параметры адресации/NAT — задаются флагами
-    std::string cidr4       = "10.8.0.1/24";
+    std::string cidr4       = "10.200.0.1/24";
     std::string cidr6       = "fd00:dead:beef::1/64";
     std::string nat44_src; // если пусто — возьмём сеть из cidr4
     std::string nat66_src; // если пусто — возьмём сеть из cidr6
@@ -97,7 +97,7 @@ static int ServerMain(int argc, char **argv)
         {
             LOGI("server")
                 << "Usage: Server [--port 5555] [--tun svpn0] [--plugin ./libPlugSRT.so]\n"
-                   "              [--cidr4 10.8.0.1/24] [--cidr6 fd00:dead:beef::1/64]\n"
+                   "              [--cidr4 10.200.0.1/24] [--cidr6 fd00:dead:beef::1/64]\n"
                    "              [--nat44 <CIDR>] [--nat66 <CIDR>] [--mtu 1400] [--no-nat]\n";
             LOGI("server") << "Help displayed";
             return 0;

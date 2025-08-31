@@ -170,8 +170,8 @@ void ConfigureNetwork(WINTUN_ADAPTER_HANDLE adapter,
  */
 struct AddressPlan
 {
-    std::string local4 = "10.8.0.2";
-    std::string peer4  = "10.8.0.1";
+    std::string local4 = "10.200.0.2";
+    std::string peer4  = "10.200.0.1";
     std::string local6 = "fd00:dead:beef::2";
     std::string peer6  = "fd00:dead:beef::1";
     unsigned long mtu  = 1400;

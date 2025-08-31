@@ -33,8 +33,8 @@ namespace
         return (ver == IpVersion::V6) ? "v6" : "v4";
     }
 
-    static std::string g_LOCAL4 = "10.8.0.2";
-    static std::string g_PEER4  = "10.8.0.1";
+    static std::string g_LOCAL4 = "10.200.0.2";
+    static std::string g_PEER4  = "10.200.0.1";
     static std::string g_LOCAL6 = "fd00:dead:beef::2";
     static std::string g_PEER6  = "fd00:dead:beef::1";
     static ULONG g_mtu = 1400;
@@ -572,8 +572,8 @@ void ConfigureNetwork(WINTUN_ADAPTER_HANDLE adapter,
     }
     else
     {
-        // IPv4: присваиваем адрес как /30 (point-to-point), а не /32
-        add_ip_address_on_if(luid, g_LOCAL4.c_str(), 30, IpVersion::V4);
+        // IPv4: присваиваем адрес как /22 (point-to-point), а не /32
+        add_ip_address_on_if(luid, g_LOCAL4.c_str(), 22, IpVersion::V4);
         set_if_metric(luid, 1, IpVersion::V4);
     }
 

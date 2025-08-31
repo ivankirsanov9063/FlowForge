@@ -17,8 +17,8 @@ namespace Network
 
     struct Params
     {
-        std::string local4 = "10.8.0.2";
-        std::string peer4  = "10.8.0.1";
+        std::string local4 = "10.200.0.2";
+        std::string peer4  = "10.200.0.1";
         std::string local6 = "fd00:dead:beef::2";
         std::string peer6  = "fd00:dead:beef::1";
         int mtu = 1400;

@@ -226,13 +226,13 @@ static int ClientMain(int argc, char **argv)
     std::string plugin_path = "PlugSRT.dll";
 
     // Address plan defaults (можно переопределить через CLI)
-    std::string local4 = "10.8.0.2";
-    std::string peer4  = "10.8.0.1";
+    std::string local4 = "10.200.0.2";
+    std::string peer4  = "10.200.0.1";
     std::string local6 = "fd00:dead:beef::2";
     std::string peer6  = "fd00:dead:beef::1";
     int mtu = 1400;
     // DNS по умолчанию; если указать --dns, список заменится/расширится
-    std::vector<std::string> dns_cli = {"10.8.0.1", "1.1.1.1"};
+    std::vector<std::string> dns_cli = {"10.200.0.1", "1.1.1.1"};
     bool dns_overridden = false;
 
     LOGD("client") << "Parsing CLI arguments";
