@@ -96,13 +96,14 @@ def main():
 
     if mode == 'client':
         client_arg = start_file[0] if start_file else None
-        client = Client('Client', client_arg)
+        client = Client(client_arg)
         initial_ip = client.get_external_ip()
         print(f"Начальный внешний IP: {initial_ip}")
         client.check(initial_ip)
 
     elif mode == 'server':
-        print('Режим сервера в разработке')
+        server_arg = start_file[0] if start_file else None
+        start_server(server_arg)
 
     else:
         print('Некорректный режим. Пожалуйста, укажите "client" или "server".')
