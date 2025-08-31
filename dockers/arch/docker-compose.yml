@@ -7,6 +7,7 @@ services:
       dockerfile: dockers\arch\Dockerfile
     image: test_arch
     privileged: true
+    network_mode: "host"
     cap_add:
       - NET_ADMIN
     ports:

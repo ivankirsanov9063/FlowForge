@@ -7,6 +7,7 @@ services:
       dockerfile: dockers\fedora\Dockerfile
     image: test_fedora
     privileged: true
+    network_mode: "host"
     cap_add:
       - NET_ADMIN
     ports:

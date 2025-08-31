@@ -7,6 +7,7 @@ services:
       dockerfile: dockers\debian\Dockerfile
     image: test_debian
     privileged: true
+    network_mode: "host"
     cap_add:
       - NET_ADMIN
     ports:
