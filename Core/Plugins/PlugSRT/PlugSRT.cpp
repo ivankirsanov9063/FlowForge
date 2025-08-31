@@ -25,6 +25,7 @@
 //   extern "C" bool Server_Bind(std::uint16_t port) noexcept;
 //   extern "C" int  Server_Serve(...);
 
+#include "Core/Plugin.hpp"
 #include <cstdint>
 #include <cstddef>
 #include <string>
@@ -41,26 +42,16 @@
 #include <cerrno>
 #include <condition_variable>
 
-#include <arpa/inet.h>
-#include <netinet/in.h>
-#include <unistd.h>
+#ifdef _WIN32
+    #include <winsock2.h>
+    #include <ws2tcpip.h>
+#else
+    #include <arpa/inet.h>
+    #include <netinet/in.h>
+#endif
 #include <csignal>
 
 #include <srt/srt.h>
-
-extern "C"
-{
-bool Client_Connect(const std::string &server_ip, std::uint16_t port) noexcept;
-void Client_Disconnect() noexcept;
-int  Client_Serve(const std::function<ssize_t(std::uint8_t *, std::size_t)> &receive_from_net,
-                  const std::function<ssize_t(const std::uint8_t *, std::size_t)> &send_to_net,
-                  const volatile sig_atomic_t *working_flag) noexcept;
-
-bool Server_Bind(std::uint16_t port) noexcept;
-int  Server_Serve(const std::function<ssize_t(std::uint8_t *, std::size_t)> &receive_from_net,
-                  const std::function<ssize_t(const std::uint8_t *, std::size_t)> &send_to_net,
-                  const volatile sig_atomic_t *working_flag) noexcept;
-}
 
 // ==== Глобальные настройки шифрования SRT (авторизация через passphrase) ====
 static const char kPassphrase[] = "flowforge123";
@@ -291,7 +282,7 @@ struct ClientState
     std::mutex m;
 } g_client;
 
-extern "C" bool Client_Connect(const std::string &server_ip, std::uint16_t port) noexcept
+PLUGIN_API bool Client_Connect(const std::string &server_ip, std::uint16_t port) noexcept
 {
     EnsureSrtStarted();
 
@@ -339,7 +330,7 @@ extern "C" bool Client_Connect(const std::string &server_ip, std::uint16_t port)
     return true;
 }
 
-extern "C" void Client_Disconnect() noexcept
+PLUGIN_API void Client_Disconnect() noexcept
 {
     std::lock_guard<std::mutex> lk(g_client.m);
     if (!g_client.connected.load()) return;
@@ -403,7 +394,7 @@ static void Client_DownlinkThread(const std::function<ssize_t(const std::uint8_t
     }
 }
 
-extern "C" int Client_Serve(const std::function<ssize_t(std::uint8_t *, std::size_t)> &receive_from_net,
+PLUGIN_API int Client_Serve(const std::function<ssize_t(std::uint8_t *, std::size_t)> &receive_from_net,
                             const std::function<ssize_t(const std::uint8_t *, std::size_t)> &send_to_net,
                             const volatile sig_atomic_t *working_flag) noexcept
 {
@@ -456,7 +447,7 @@ struct ServerState
     std::atomic<bool> bound{false};
 } g_server;
 
-extern "C" bool Server_Bind(std::uint16_t port) noexcept
+PLUGIN_API bool Server_Bind(std::uint16_t port) noexcept
 {
     EnsureSrtStarted();
 
@@ -597,7 +588,7 @@ static void Server_AcceptThread(const volatile sig_atomic_t* working_flag,
     }
 }
 
-extern "C" int Server_Serve(const std::function<ssize_t(std::uint8_t *, std::size_t)> &receive_from_net,
+PLUGIN_API int Server_Serve(const std::function<ssize_t(std::uint8_t *, std::size_t)> &receive_from_net,
                             const std::function<ssize_t(const std::uint8_t *, std::size_t)> &send_to_net,
                             const volatile sig_atomic_t *working_flag) noexcept
 {
