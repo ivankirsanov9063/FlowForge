@@ -18,6 +18,6 @@ if(CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU")
     )
 endif()
 
-add_subdirectory(PlugTLS)
+add_subdirectory(PlugSRT)
 
 install(DIRECTORY DESTINATION bin)
