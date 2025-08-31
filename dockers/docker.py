@@ -6,10 +6,10 @@ import sys
 
 def git_clone(branche):
     git_clone = ['git', 'clone', 'https://github.com/ivankirsanov9062/FlowForge.git', '-b', branche, 'FlowForge']
-    print(f'Клонирование репозитория. Ветка: {branche}')
+    print(f'Клонирование репозитория. Ветка: {branche}', flush=True)
     result = subprocess.run(git_clone, cwd='/app')
     if result.returncode != 0:
-        print("Ошибка при клонировании репозитория")
+        print("Ошибка при клонировании репозитория", flush=True)
         sys.exit(1)
             
 def build():
@@ -25,6 +25,7 @@ class Client:
         self.cwd_path = cwd_path
         self.process = None
         self.stop_event = threading.Event()
+        self.ip_changed_event = threading.Event()
 
     def get_external_ip(self):
         urls = [
@@ -38,22 +39,22 @@ class Client:
                 response.raise_for_status()
                 return response.text.strip()
             except requests.RequestException as e:
-                print(f"Ошибка получения IP от {url}: {e}")
+                print(f"Ошибка получения IP от {url}: {e}", flush=True)
                 sys.exit(1)
+
 
     def monitor_ip(self, initial_ip):
         while not self.stop_event.is_set():
-            time.sleep(30)
+            time.sleep(10)
             current_ip = self.get_external_ip()
             if current_ip != initial_ip:
-                print(f"IP изменился: -> {current_ip}")
-                if self.process:
-                    self.process.terminate()
-                    self.process.wait()
-                sys.exit(0)
+                print(f"IP изменился: -> {current_ip}", flush=True)
+                self.ip_changed_event.set()  # Уведомляем основной поток
+                self.stop_event.set()
+                return
 
     def start_client(self):
-        print("Запуск клиента")
+        print("Запуск клиента", flush=True)
         self.process = subprocess.Popen(['sudo', f'./{self.client_name}'], cwd=self.cwd_path)
 
     def check(self, initial_ip):
@@ -61,26 +62,40 @@ class Client:
         monitor_thread = threading.Thread(target=self.monitor_ip, args=(initial_ip,))
         monitor_thread.start()
 
-        try:
-            self.process.wait()
-            self.stop_event.set()
-            monitor_thread.join()
-            current_ip = self.get_external_ip()
-            if current_ip == initial_ip:
-                print("IP не изменился, программа завершена с кодом 1")
-                sys.exit(1)
-            else:
-                print("IP изменился, программа завершена с кодом 0")
-                sys.exit(0)
-        except KeyboardInterrupt:
-            print("Прервано пользователем")
-            self.process.terminate()
-            self.stop_event.set()
-            monitor_thread.join()
+        # Ожидаем завершения процесса или изменения IP
+        while True:
+            # мониторим, завершился ли процесс
+            retcode = self.process.poll()
+            if retcode is not None:
+                # Процесс завершился
+                break
+            # проверяем, установлено ли событие смены IP
+            if self.ip_changed_event.is_set():
+                # IP поменялся - завершаем работу
+                self.process.terminate()
+                self.process.wait()
+                break
+            time.sleep(1)
+
+        # После выхода из цикла:
+        self.stop_event.set()
+        monitor_thread.join()
+
+        # Проверяем, что произошло
+        current_ip = self.get_external_ip()
+        if self.ip_changed_event.is_set():
+            print("IP изменился, программа завершена с кодом 0", flush=True)
+            sys.exit(0)
+        elif current_ip == initial_ip:
+            print("IP не изменился, программа завершена с кодом 1", flush=True)
+            sys.exit(1)
+        else:
+            # Процесс завершился, но IP не изменился
+            print("Процесс завершился, IP не изменился", flush=True)
             sys.exit(1)
 
 def start_server(server_file):
-    print("Запуск сервера")
+    print("Запуск сервера", flush=True)
     subprocess.Popen(['sudo', f'./{server_file}'], cwd="/app/FlowForge/build/bin")
 
 def main():
@@ -98,7 +113,7 @@ def main():
         client_arg = start_file[0] if start_file else None
         client = Client(client_arg)
         initial_ip = client.get_external_ip()
-        print(f"Начальный внешний IP: {initial_ip}")
+        print(f"Начальный внешний IP: {initial_ip}", flush=True)
         client.check(initial_ip)
 
     elif mode == 'server':
@@ -106,7 +121,7 @@ def main():
         start_server(server_arg)
 
     else:
-        print('Некорректный режим. Пожалуйста, укажите "client" или "server".')
+        print('Некорректный режим. Пожалуйста, укажите "client" или "server".', flush=True)
 
 if __name__ == "__main__":
     main()

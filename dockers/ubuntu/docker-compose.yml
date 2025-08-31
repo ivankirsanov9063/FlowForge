@@ -7,6 +7,7 @@ services:
       dockerfile: dockers\ubuntu\Dockerfile
     image: test_ubuntu
     privileged: true
+    network_mode: "host"
     cap_add:
       - NET_ADMIN
     ports:
