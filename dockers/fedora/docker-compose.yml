@@ -1,0 +1,20 @@
+version: '3.8'
+
+services:
+  fedora:
+    build:
+      context: ../../
+      dockerfile: dockers/fedora/Dockerfile
+    image: test_fedora
+    privileged: true
+    network_mode: "host"
+    volumes:
+      - ../../app:/app
+      - ../../dockers/docker.py:/app/docker.py
+    cap_add:
+      - NET_ADMIN
+    container_name: fedora
+    environment:
+      mode: ""
+      start: ""
+    command: ["python3", "docker.py", "${MODE}", "${START}"]
