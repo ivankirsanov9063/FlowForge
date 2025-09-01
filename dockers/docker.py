@@ -97,7 +97,9 @@ class Client:
 def start_server(server_file):
     print("Запуск сервера", flush=True)
     subprocess.Popen(['sudo', f'./{server_file}'], cwd="/app/FlowForge/build/bin")
-
+    while True:
+        pass
+    
 def main():
     if len(sys.argv) < 3:
         sys.exit(1)
