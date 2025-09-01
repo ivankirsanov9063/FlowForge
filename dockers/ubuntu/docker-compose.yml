@@ -3,7 +3,7 @@ version: '3.8'
 services:
   ubuntu:
     build:
-      context: ..\..\
+      context: ../../
       dockerfile: dockers\ubuntu\Dockerfile
     image: test_ubuntu
     privileged: true
@@ -11,7 +11,7 @@ services:
     cap_add:
       - NET_ADMIN
     ports:
-      - "0.0.0.0:5555:5555"
+      - "0.0.0.0:6666:5555"
     container_name: ubuntu
     environment:
       branche: ""

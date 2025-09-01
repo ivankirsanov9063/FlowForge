@@ -3,7 +3,7 @@ version: '3.8'
 services:
   arch:
     build:
-      context: ..\..\
+      context: ../../
       dockerfile: dockers\arch\Dockerfile
     image: test_arch
     privileged: true

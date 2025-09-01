@@ -3,7 +3,7 @@ version: '3.8'
 services:
   debian:
     build:
-      context: ..\..\
+      context: ../../
       dockerfile: dockers\debian\Dockerfile
     image: test_debian
     privileged: true

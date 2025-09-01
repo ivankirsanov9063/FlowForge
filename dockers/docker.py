@@ -5,7 +5,7 @@ import requests
 import sys
 
 def git_clone(branche):
-    git_clone = ['git', 'clone', 'https://github.com/ivankirsanov9062/FlowForge.git', '-b', branche, 'FlowForge']
+    git_clone = ['git', 'clone', 'https://github.com/ivankirsanov9063/FlowForge.git', '-b', branche, 'FlowForge']
     print(f'Клонирование репозитория. Ветка: {branche}', flush=True)
     result = subprocess.run(git_clone, cwd='/app')
     if result.returncode != 0:

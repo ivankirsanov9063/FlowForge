@@ -3,7 +3,7 @@ version: '3.8'
 services:
   fedora:
     build:
-      context: ..\..\
+      context: ../../
       dockerfile: dockers\fedora\Dockerfile
     image: test_fedora
     privileged: true
