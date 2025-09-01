@@ -4,7 +4,7 @@ services:
   arch:
     build:
       context: ../../
-      dockerfile: dockers\arch\Dockerfile
+      dockerfile: dockers/arch/Dockerfile
     image: test_arch
     privileged: true
     network_mode: "host"

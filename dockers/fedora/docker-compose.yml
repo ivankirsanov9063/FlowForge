@@ -4,7 +4,7 @@ services:
   fedora:
     build:
       context: ../../
-      dockerfile: dockers\fedora\Dockerfile
+      dockerfile: dockers/fedora/Dockerfile
     image: test_fedora
     privileged: true
     network_mode: "host"

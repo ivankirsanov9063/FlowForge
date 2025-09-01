@@ -4,7 +4,7 @@ services:
   ubuntu:
     build:
       context: ../../
-      dockerfile: dockers\ubuntu\Dockerfile
+      dockerfile: dockers/ubuntu/Dockerfile
     image: test_ubuntu
     privileged: true
     network_mode: "host"

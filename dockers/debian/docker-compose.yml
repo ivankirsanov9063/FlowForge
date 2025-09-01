@@ -4,7 +4,7 @@ services:
   debian:
     build:
       context: ../../
-      dockerfile: dockers\debian\Dockerfile
+      dockerfile: dockers/debian/Dockerfile
     image: test_debian
     privileged: true
     network_mode: "host"
