@@ -37,7 +37,6 @@ class Client:
                 response.raise_for_status()
                 ip = response.text.strip()
                 print(f'Получен IP от {url}: {ip}', flush=True)
-                # Не возвращаем сразу — продолжаем проверять все сервисы для надежности
             except requests.exceptions.RequestException as e:
                 print(f'Ошибка получения IP от {url}: {e}', flush=True)
         if ip:
@@ -164,3 +163,4 @@ def main():
 if __name__ == "__main__":
 
     main()
+
