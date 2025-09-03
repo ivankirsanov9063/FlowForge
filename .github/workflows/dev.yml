@@ -1,0 +1,32 @@
+on:
+  push:
+    branches:
+      - 'dev'
+
+jobs:
+  build-and-run:
+    runs-on: [self-hosted, test-client]
+    env:
+      MODE: client
+      START: ClientCLI
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v3
+
+      - name: Ubuntu_Client
+        run: |
+          echo "MODE=${MODE}"
+          echo "START=${START}"
+          
+          # Запуск docker-compose в фоновом режиме
+          docker-compose -f ./dockers/ubuntu/docker-compose.yml up -d --build
+          
+          # Подождать немного, чтобы контейнер запустился
+          sleep 10
+          
+          # Удаление контейнера по имени
+          docker rm -f ubuntu
+          
+          # Удаление образа
+          docker rmi test_ubunt || true
