@@ -29,4 +29,4 @@ jobs:
           docker rm -f ubuntu
           
           # Удаление образа
-          docker rmi test_ubunt || true
+          docker rmi test_ubuntu || true
