@@ -15,7 +15,7 @@ def build():
             sys.exit(1)
 
 class Client:
-    def __init__(self, client_name, cwd_path='/app/build/bin'):  # Исправлен путь (убран двойной слэш)
+    def __init__(self, client_name, cwd_path='/app/build/bin'):
         self.client_name = client_name
         self.cwd_path = cwd_path
         self.process = None
@@ -162,4 +162,5 @@ def main():
         print('Некорректный режим. Пожалуйста, укажите "client" или "server".', flush=True)
 
 if __name__ == "__main__":
+
     main()
