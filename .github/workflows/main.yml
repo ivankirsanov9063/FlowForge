@@ -7,54 +7,133 @@ on:
       - 'main'
 
 jobs:
-  build-and-run:
+  ubuntu-client:
     runs-on: [self-hosted, test-client]
     env:
       MODE: client
       START: ClientCLI
-
     steps:
       - name: Checkout repository
         uses: actions/checkout@v3
 
-      - name: Ubuntu_Client
+      - name: Run Ubuntu Client
         run: |
           echo "MODE=${MODE}"
           echo "START=${START}"
           
-          # Запуск docker-compose в фоновом режиме
-          docker-compose -f ./dockers/ubuntu/docker-compose.yml up -d --build
+          # Запуск контейнера
+          docker-compose -f ./dockers/ubuntu/docker-compose.yml up -d
           
-          # Подождать немного, чтобы контейнер запустился
+          # Дать время контейнеру запуститься
           sleep 10
           
-          # Удаление контейнера по имени
-          docker rm -f ubuntu
-        
+          # Мониторинг логов: продолжается до остановки контейнера
+          # Пока контейнер существует, выводим лог
+          container_name=ubuntu
+          
+          while docker ps -q -f name=$container_name; do
+            docker logs -f $container_name &> ubuntu.log &
+            LOG_PID=$!
+            # Проверяем каждые 5 секунд, чтобы не перегружать CPU
+            sleep 5
+            # Остановить логирование при завершении контейнера
+            if ! docker ps -q -f name=$container_name; then
+              kill $LOG_PID
+            fi
+          done
 
-      - name: Debian_Client
-        run: |
-          echo "MODE=${MODE}"
-          echo "START=${START}"
-          
-          docker-compose -f ./dockers/debian/docker-compose.yml up -d --build
-          sleep 10
-          docker rm -f debian
+          # Удаляем контейнер
+          docker rm -f $container_name
 
-      - name: Fedora_Client
-        run: |
-          echo "MODE=${MODE}"
-          echo "START=${START}"
-          
-          docker-compose -f ./dockers/fedora/docker-compose.yml up -d --build
-          sleep 10
-          docker rm -f fedora
+  debian-client:
+    runs-on: [self-hosted, test-client]
+    env:
+      MODE: client
+      START: ClientCLI
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v3
 
-      - name: Arch_Client
+      - name: Run Debian Client
         run: |
           echo "MODE=${MODE}"
           echo "START=${START}"
           
-          docker-compose -f ./dockers/arch/docker-compose.yml up -d --build
+          docker-compose -f ./dockers/debian/docker-compose.yml up -d
+          
           sleep 10
-          docker rm -f arch
+          
+          container_name=debian
+          
+          while docker ps -q -f name=$container_name; do
+            docker logs -f $container_name &> debian.log &
+            LOG_PID=$!
+            sleep 5
+            if ! docker ps -q -f name=$container_name; then
+              kill $LOG_PID
+            fi
+          done
+          
+          docker rm -f $container_name
+
+  fedora-client:
+    runs-on: [self-hosted, test-client]
+    env:
+      MODE: client
+      START: ClientCLI
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v3
+
+      - name: Run Fedora Client
+        run: |
+          echo "MODE=${MODE}"
+          echo "START=${START}"
+          
+          docker-compose -f ./dockers/fedora/docker-compose.yml up -d
+          
+          sleep 10
+          
+          container_name=fedora
+          
+          while docker ps -q -f name=$container_name; do
+            docker logs -f $container_name &> fedora.log &
+            LOG_PID=$!
+            sleep 5
+            if ! docker ps -q -f name=$container_name; then
+              kill $LOG_PID
+            fi
+          done
+          
+          docker rm -f $container_name
+
+  arch-client:
+    runs-on: [self-hosted, test-client]
+    env:
+      MODE: client
+      START: ClientCLI
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v3
+
+      - name: Run Arch Client
+        run: |
+          echo "MODE=${MODE}"
+          echo "START=${START}"
+          
+          docker-compose -f ./dockers/arch/docker-compose.yml up -d
+          
+          sleep 10
+          
+          container_name=arch
+          
+          while docker ps -q -f name=$container_name; do
+            docker logs -f $container_name &> arch.log &
+            LOG_PID=$!
+            sleep 5
+            if ! docker ps -q -f name=$container_name; then
+              kill $LOG_PID
+            fi
+          done
+          
+          docker rm -f $container_name
