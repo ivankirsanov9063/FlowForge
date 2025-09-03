@@ -1,3 +1,5 @@
+[![.github/workflows/main.yml](https://github.com/ivankirsanov9063/FlowForge/actions/workflows/main.yml/badge.svg)](https://github.com/ivankirsanov9063/FlowForge/actions/workflows/main.yml)
+[![.github/workflows/dev.yml](https://github.com/ivankirsanov9063/FlowForge/actions/workflows/dev.yml/badge.svg)](https://github.com/ivankirsanov9063/FlowForge/actions/workflows/dev.yml)
 # FlowForge — умный VPN-протокол и инфраструктура
 
 _Цель:_ построить настраиваемую, модульную VPN-систему «с нуля» с упором на обход блокировок, устойчивость, управляемость и расширяемость.
