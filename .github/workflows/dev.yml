@@ -1,10 +1,7 @@
 on:
   push:
     branches:
-      - 'main'
-  pull_request:
-    branches:
-      - 'main'
+      - 'dev'
 
 jobs:
   ubuntu-client:
@@ -22,25 +19,6 @@ jobs:
           echo "START=${START}"
           
           # Запуск контейнера
-          docker-compose -f ./dockers/ubuntu/docker-compose.yml up -d
+          docker-compose -f ./dockers/ubuntu/docker-compose.yml up
           
-          # Дать время контейнеру запуститься
-          sleep 10
-          
-          # Мониторинг логов: продолжается до остановки контейнера
-          # Пока контейнер существует, выводим лог
-          container_name=ubuntu
-          
-          while docker ps -q -f name=$container_name; do
-            docker logs -f $container_name &> ubuntu.log &
-            LOG_PID=$!
-            # Проверяем каждые 5 секунд, чтобы не перегружать CPU
-            sleep 5
-            # Остановить логирование при завершении контейнера
-            if ! docker ps -q -f name=$container_name; then
-              kill $LOG_PID
-            fi
-          done
-
-          # Удаляем контейнер
           docker rm -f $container_name
