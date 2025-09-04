@@ -20,5 +20,9 @@ jobs:
           
           # Запуск контейнера
           docker-compose -f ./dockers/ubuntu/docker-compose.yml up
+
+          EXIT_CODE=$(docker wait ubuntu)
           
           docker rm -f ubuntu
+
+          exit "$EXIT_CODE"
