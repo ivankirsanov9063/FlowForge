@@ -5,4 +5,5 @@ RUN apt-get update && apt-get install -y build-essential cmake git wget pkg-conf
 RUN apt install python3 pip -y && pip install requests --break-system-packages
 WORKDIR /app
 
-RUN apt install -y libsrt-openssl-dev
+RUN apt update --fix-missing && apt install -y libsrt-openssl-dev
+
