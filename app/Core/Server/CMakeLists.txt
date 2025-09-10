@@ -7,6 +7,7 @@ add_library(ServerCore SHARED
         ${CMAKE_SOURCE_DIR}/Core/PluginWrapper.cpp
         ${CMAKE_SOURCE_DIR}/Core/TUN.cpp
         ${CMAKE_SOURCE_DIR}/Core/Logger.cpp
+        ${CMAKE_SOURCE_DIR}/Core/Config.cpp
 )
 
 target_compile_features(ServerCore PRIVATE cxx_std_23)

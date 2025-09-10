@@ -4,6 +4,7 @@
 #include "Core/Logger.hpp"
 #include "Core/PluginWrapper.hpp"
 #include "Core/TUN.hpp"
+#include "Core/Config.hpp"
 #include "Network.hpp"
 #include "NetWatcher.hpp"
 #include "FirewallRules.hpp"
@@ -93,51 +94,24 @@ static int ClientMain(std::string& config)
         return s.substr(b, e - b + 1);
     };
 
-    auto require_string = [](const boost::json::object& o, const char* key) -> std::string
-    {
-        if (const boost::json::value* v = o.if_contains(key))
-        {
-            if (v->is_string())
-                return boost::json::value_to<std::string>(*v);
-        }
-        throw std::runtime_error(std::string("missing or invalid string field '") + key + "'");
-    };
-
-    auto require_int = [](const boost::json::object& o, const char* key) -> int
-    {
-        if (const boost::json::value* v = o.if_contains(key))
-        {
-            if (v->is_int64())  return static_cast<int>(v->as_int64());
-            if (v->is_uint64()) return static_cast<int>(v->as_uint64());
-            if (v->is_string())
-            {
-                const auto s = boost::json::value_to<std::string>(*v);
-                try { return std::stoi(s); } catch (...) {}
-            }
-        }
-        throw std::runtime_error(std::string("missing or invalid integer field '") + key + "'");
-    };
-
-    try
-    {
-        boost::json::value jv = boost::json::parse(config);
+    boost::json::value jv = boost::json::parse(config);
         if (!jv.is_object())
             throw std::runtime_error("config root must be an object");
 
-        const boost::json::object& o = jv.as_object();
+        boost::json::object& o = jv.as_object();
 
         // Обязательные поля (все):
-        tun         = require_string(o, "tun");
-        server_ip   = require_string(o, "server");
-        port        = require_int(o,    "port");
-        plugin_path = require_string(o, "plugin");
+        tun         = Config::RequireString(o, "tun");
+        server_ip   = Config::RequireString(o, "server");
+        port        = Config::RequireInt(o,    "port");
+        plugin_path = Config::RequireString(o, "plugin");
 
-        local4      = require_string(o, "local4");
-        peer4       = require_string(o, "peer4");
-        local6      = require_string(o, "local6");
-        peer6       = require_string(o, "peer6");
+        local4      = Config::RequireString(o, "local4");
+        peer4       = Config::RequireString(o, "peer4");
+        local6      = Config::RequireString(o, "local6");
+        peer6       = Config::RequireString(o, "peer6");
 
-        mtu         = require_int(o,    "mtu");
+        mtu         = Config::RequireInt(o,    "mtu");
 
         // dns: допускаем либо массив строк, либо строку "ip,ip,..."
         dns_cli.clear();
@@ -192,12 +166,6 @@ static int ClientMain(std::string& config)
             throw std::runtime_error("'port' must be in [1..65535]");
         if (mtu < 576 || mtu > 9200)
             throw std::runtime_error("'mtu' must be in [576..9200]");
-    }
-    catch (const std::exception& e)
-    {
-        LOGE("client") << "Config error: " << e.what();
-        return 1;
-    }
 
     // Прокидываем адресный план/MTU в сетевой модуль до конфигурации
     {
@@ -321,7 +289,7 @@ static int ClientMain(std::string& config)
     LOGD("netwatcher") << "Armed";
 
     // Connect
-    if (!PluginWrapper::Client_Connect(plugin, server_ip, static_cast<std::uint16_t>(port)))
+    if (!PluginWrapper::Client_Connect(plugin, o))
     {
         LOGE("pluginwrapper") << "Client_Connect failed";
         watcher.Stop();

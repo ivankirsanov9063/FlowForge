@@ -7,6 +7,7 @@
 #include <iostream>
 #include <cstdint>
 #include <cstddef>
+#include <boost/json/object.hpp>
 
 #ifdef __linux__
 
@@ -118,10 +119,9 @@ namespace PluginWrapper
     }
 
     bool Client_Connect(const Plugin     &plugin,
-                        const std::string &server_ip,
-                        std::uint16_t      port) noexcept
+                        boost::json::object& config) noexcept
     {
-        return plugin.Client_Connect(server_ip, port);
+        return plugin.Client_Connect(config);
     }
 
     void Client_Disconnect(const Plugin &plugin) noexcept
@@ -142,9 +142,9 @@ namespace PluginWrapper
     }
 
     bool Server_Bind(const Plugin &plugin,
-                     std::uint16_t port) noexcept
+                     boost::json::object& config) noexcept
     {
-        return plugin.Server_Bind(port);
+        return plugin.Server_Bind(config);
     }
 
     int Server_Serve(const Plugin &plugin,

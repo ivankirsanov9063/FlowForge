@@ -271,13 +271,11 @@ static int ClientMain(std::string& config)
         throw std::runtime_error(std::string("missing or invalid integer field '") + key + "'");
     };
 
-    try
-    {
-        boost::json::value jv = boost::json::parse(config);
+    boost::json::value jv = boost::json::parse(config);
         if (!jv.is_object())
             throw std::runtime_error("config root must be an object");
 
-        const boost::json::object& o = jv.as_object();
+    boost::json::object &o = jv.as_object();
 
         // Обязательные поля (все):
         tun         = require_string(o, "tun");
@@ -345,12 +343,6 @@ static int ClientMain(std::string& config)
             throw std::runtime_error("'port' must be in [1..65535]");
         if (mtu < 576 || mtu > 9200)
             throw std::runtime_error("'mtu' must be in [576..9200]");
-    }
-    catch (const std::exception& e)
-    {
-        LOGE("client") << "Config error: " << e.what();
-        return 1;
-    }
 
     server_ip = strip_brackets(server_ip);
     LOGD("client") << "Normalized server: " << server_ip;
@@ -498,9 +490,7 @@ static int ClientMain(std::string& config)
     LOGI("tun") << "Session started (ring=0x20000)";
     LOGI("tun") << "Up: " << tun;
 
-    if (!PluginWrapper::Client_Connect(plugin,
-                                       server_ip,
-                                       static_cast<std::uint16_t>(port)))
+    if (!PluginWrapper::Client_Connect(plugin, o))
     {
         LOGE("pluginwrapper") << "Client_Connect failed";
         Wintun.End(sess);

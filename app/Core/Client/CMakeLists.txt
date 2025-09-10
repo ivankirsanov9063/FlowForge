@@ -16,6 +16,7 @@ add_library(ClientCore SHARED
         ${CMAKE_SOURCE_DIR}/Core/PluginWrapper.cpp
         ${CMAKE_SOURCE_DIR}/Core/TUN.cpp
         ${CMAKE_SOURCE_DIR}/Core/Logger.cpp
+        ${CMAKE_SOURCE_DIR}/Core/Config.cpp
 )
 
 if (WIN32)

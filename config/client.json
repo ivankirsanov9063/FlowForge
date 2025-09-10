@@ -1,0 +1,15 @@
+{
+  "tun": "cvpn0",
+  "server": "193.233.23.221",
+  "port": 5555,
+  "plugin": "./libPlugSRT.so",
+
+  "local4": "10.200.0.2",
+  "peer4":  "10.200.0.1",
+  "local6": "fd00:dead:beef::2",
+  "peer6":  "fd00:dead:beef::1",
+
+  "mtu": 1400,
+  "dns": ["10.200.0.1", "1.1.1.1"],
+  "password":  "FlowForge123456"
+}

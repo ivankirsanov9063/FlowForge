@@ -2,6 +2,7 @@
 
 #include "Core/PluginWrapper.hpp"
 #include "Core/TUN.hpp"
+#include "Core/Config.hpp"
 #include "Network.hpp"
 #include "NetworkRollback.hpp"
 #include "NetWatcher.hpp"
@@ -38,7 +39,6 @@ static int ServerMain(std::string& config)
     int         port        = 5555;
     std::string plugin_path = "./libPlugSRT.so";
 
-    // Параметры адресации/NAT — задаются через конфиг
     std::string cidr4       = "10.200.0.1/24";
     std::string cidr6       = "fd00:dead:beef::1/64";
     std::string nat44_src; // если пусто — возьмём сеть из cidr4
@@ -46,116 +46,49 @@ static int ServerMain(std::string& config)
     int         mtu         = 1400;
     bool        with_nat_fw = true;
 
-    try
+    boost::json::value  jv = boost::json::parse(config);
+    boost::json::object& o  = jv.as_object();
+
+    // Чтение обязательных полей (если хотите их сделать необязательными — оборачивайте в if_contains)
+    tun         = Config::RequireString(o, "tun");         LOGD("server") << "Arg: --tun "     << tun;
+    port        = Config::RequireInt(o,    "port");        LOGD("server") << "Arg: --port "    << port;
+    plugin_path = Config::RequireString(o, "plugin");      LOGD("server") << "Arg: --plugin "  << plugin_path;
+
+    cidr4       = Config::RequireString(o, "cidr4");       LOGD("server") << "Arg: --cidr4 "   << cidr4;
+    cidr6       = Config::RequireString(o, "cidr6");       LOGD("server") << "Arg: --cidr6 "   << cidr6;
+    nat44_src   = Config::RequireString(o, "nat44");       LOGD("server") << "Arg: --nat44 "   << nat44_src;
+    nat66_src   = Config::RequireString(o, "nat66");       LOGD("server") << "Arg: --nat66 "   << nat66_src;
+    mtu         = Config::RequireInt(o,    "mtu");         LOGD("server") << "Arg: --mtu "     << mtu;
+
+    // Варианты управления NAT/MSS/FW: no_nat имеет приоритет, иначе with_nat_fw, иначе остаётся дефолт
+    if (o.if_contains("no_nat"))
     {
-        boost::json::value jv = boost::json::parse(config);
-        const auto& o = jv.as_object();
-
-        auto set_str = [&](const char* key, std::string& dst, const char* log_arg_name)
-        {
-            if (const auto* pv = o.if_contains(key))
-            {
-                if (pv->is_string())
-                {
-                    dst = std::string(pv->as_string().c_str());
-                    LOGD("server") << "Arg: " << log_arg_name << " " << dst;
-                }
-            }
-        };
-
-        auto set_int = [&](const char* key, int& dst, const char* log_arg_name)
-        {
-            if (const auto* pv = o.if_contains(key))
-            {
-                if (pv->is_int64())
-                {
-                    dst = static_cast<int>(pv->as_int64());
-                    LOGD("server") << "Arg: " << log_arg_name << " " << dst;
-                }
-                else if (pv->is_uint64())
-                {
-                    dst = static_cast<int>(pv->as_uint64());
-                    LOGD("server") << "Arg: " << log_arg_name << " " << dst;
-                }
-                else if (pv->is_string())
-                {
-                    try
-                    {
-                        dst = std::stoi(std::string(pv->as_string().c_str()));
-                        LOGD("server") << "Arg: " << log_arg_name << " " << dst;
-                    }
-                    catch (...) { LOGE("server") << "Config: '" << key << "' is not a valid integer"; }
-                }
-            }
-        };
-
-        auto set_bool = [&](const char* key, bool& dst, const char* log_arg_name)
-        {
-            if (const auto* pv = o.if_contains(key))
-            {
-                if (pv->is_bool())
-                {
-                    dst = pv->as_bool();
-                    LOGD("server") << "Arg: " << log_arg_name << " " << (dst ? "true" : "false");
-                }
-                else if (pv->is_string())
-                {
-                    std::string s = std::string(pv->as_string().c_str());
-                    std::transform(s.begin(), s.end(), s.begin(),
-                                   [](unsigned char c){ return static_cast<char>(std::tolower(c)); });
-                    if (s == "1" || s == "true" || s == "yes" || s == "on")
-                    {
-                        dst = true;
-                        LOGD("server") << "Arg: " << log_arg_name << " true";
-                    }
-                    else if (s == "0" || s == "false" || s == "no" || s == "off")
-                    {
-                        dst = false;
-                        LOGD("server") << "Arg: " << log_arg_name << " false";
-                    }
-                }
-            }
-        };
-
-        // Присваивания из JSON (если ключа нет — остаётся дефолт)
-        set_str("tun",         tun,         "--tun");
-        set_int("port",        port,        "--port");
-        // В конфиге ключ — "plugin", как во флаге; кладём в plugin_path
-        set_str("plugin",      plugin_path, "--plugin");
-
-        set_str("cidr4",       cidr4,       "--cidr4");
-        set_str("cidr6",       cidr6,       "--cidr6");
-        set_str("nat44",       nat44_src,   "--nat44");
-        set_str("nat66",       nat66_src,   "--nat66");
-        set_int("mtu",         mtu,         "--mtu");
-
-        // Поддерживаем оба варианта:
-        // 1) with_nat_fw: true/false
-        // 2) no_nat: true -> отключает NAT/MSS/FW
-        set_bool("with_nat_fw", with_nat_fw, "with_nat_fw");
-        if (const auto* pv = o.if_contains("no_nat"))
-        {
-            bool no_nat = false;
-            // Разбираем логически, как в set_bool (минимально)
-            if (pv->is_bool()) { no_nat = pv->as_bool(); }
-            else if (pv->is_string())
-            {
-                std::string s = std::string(pv->as_string().c_str());
-                std::transform(s.begin(), s.end(), s.begin(),
-                               [](unsigned char c){ return static_cast<char>(std::tolower(c)); });
-                no_nat = (s == "1" || s == "true" || s == "yes" || s == "on");
-            }
-            if (no_nat)
-            {
-                with_nat_fw = false;
-                LOGD("server") << "Arg: --no-nat (NAT/MSS/FW disabled)";
-            }
-        }
+        const bool no_nat = Config::RequireBool(o, "no_nat");
+        with_nat_fw = !no_nat;
+        if (no_nat) LOGD("server") << "Arg: --no-nat (NAT/MSS/FW disabled)";
+        else        LOGD("server") << "Arg: --no-nat false (ignored)";
     }
-    catch (const std::exception& e)
+    else if (o.if_contains("with_nat_fw"))
     {
-        LOGE("server") << "Failed to parse config JSON: " << e.what();
-        return 1; // если это внутри main
+        with_nat_fw = Config::RequireBool(o, "with_nat_fw");
+        LOGD("server") << "Arg: with_nat_fw " << (with_nat_fw ? "true" : "false");
+    }
+    else
+    {
+        // ни одного ключа нет — оставляем дефолт with_nat_fw
+        LOGD("server") << "Arg: with_nat_fw (default) " << (with_nat_fw ? "true" : "false");
+    }
+
+    // Fallback для nat44/nat66: если пусто — берём сеть из cidr4/cidr6
+    if (nat44_src.empty())
+    {
+        nat44_src = cidr4;
+        LOGD("server") << "Arg: --nat44 (from cidr4) " << nat44_src;
+    }
+    if (nat66_src.empty())
+    {
+        nat66_src = cidr6;
+        LOGD("server") << "Arg: --nat66 (from cidr6) " << nat66_src;
     }
 
     LOGI("server") << "Args: tun=" << tun
@@ -247,9 +180,7 @@ static int ServerMain(std::string& config)
         }
 
         LOGI("server") << "Binding server: port=" << port;
-        if (!PluginWrapper::Server_Bind(
-                plugin,
-                static_cast<std::uint16_t>(port)))
+        if (!PluginWrapper::Server_Bind(plugin, o))
         {
             LOGE("server") << "Bind: failed on port " << port;
             throw std::runtime_error("Failed to bind server on port " + std::to_string(port));

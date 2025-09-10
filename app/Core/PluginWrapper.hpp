@@ -5,6 +5,7 @@
 #include <csignal>
 #include <cstdint>
 #include <cstddef>
+#include <boost/json/object.hpp>
 
 #ifdef _WIN32
 
@@ -17,13 +18,11 @@ namespace PluginWrapper
 {
     /**
      * @brief Тип функции плагина для подключения клиента.
-     * @param server_ip IP-адрес сервера.
-     * @param port Порт подключения.
+     * @param config Объект JSON.
      * @return true при успешном подключении.
      */
     using Client_Connect_t =
-            bool (*)(const std::string &server_ip,
-                     std::uint16_t port) noexcept;
+            bool (*)(boost::json::object& config) noexcept;
 
     /**
      * @brief Тип функции плагина для отключения клиента.
@@ -47,11 +46,11 @@ namespace PluginWrapper
 
     /**
      * @brief Тип функции плагина для привязки сервера к порту.
-     * @param port Порт привязки.
+     * @param config Объект JSON.
      * @return true при успехе.
      */
     using Server_Bind_t =
-            bool (*)(std::uint16_t port) noexcept;
+            bool (*)(boost::json::object& config) noexcept;
 
     /**
      * @brief Тип функции плагина для обработки трафика сервера.
@@ -106,13 +105,11 @@ namespace PluginWrapper
     /**
      * @brief Вызывает функцию Client_Connect плагина.
      * @param plugin Загруженный плагин.
-     * @param server_ip IP-адрес сервера.
-     * @param port Порт подключения.
+     * @param config Объект JSON
      * @return true при успешном подключении.
      */
     bool Client_Connect(const Plugin &plugin,
-                        const std::string &server_ip,
-                        std::uint16_t port) noexcept;
+                        boost::json::object& config) noexcept;
 
     /**
      * @brief Вызывает функцию Client_Disconnect плагина.
@@ -138,10 +135,10 @@ namespace PluginWrapper
     /**
      * @brief Вызывает функцию Server_Bind плагина.
      * @param plugin Загруженный плагин.
-     * @param port Порт привязки.
+     * @param config Объект JSON
      * @return true при успехе.
      */
-    bool Server_Bind(const Plugin &plugin, std::uint16_t port) noexcept;
+    bool Server_Bind(const Plugin &plugin, boost::json::object& config) noexcept;
 
     /**
      * @brief Вызывает функцию Server_Serve плагина.

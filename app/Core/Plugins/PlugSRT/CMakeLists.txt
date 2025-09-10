@@ -46,7 +46,10 @@ else()
     )
 endif()
 
-add_library(PlugSRT SHARED PlugSRT.cpp)
+add_library(PlugSRT SHARED
+        PlugSRT.cpp
+
+        ${CMAKE_SOURCE_DIR}/Core/Config.cpp)
 
 # Если нужен общий инклуд корня проекта
 target_include_directories(PlugSRT PUBLIC

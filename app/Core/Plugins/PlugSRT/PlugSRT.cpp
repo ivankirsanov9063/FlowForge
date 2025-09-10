@@ -18,14 +18,15 @@
 //   Ubuntu/Debian: sudo apt-get install -y libsrt-dev
 //
 // Внешний API (C):
-//   extern "C" bool Client_Connect(const std::string &server_ip, std::uint16_t port) noexcept;
+//   extern "C" bool Client_Connect(boost::json::object& config) noexcept;
 //   extern "C" void Client_Disconnect() noexcept;
 //   extern "C" int  Client_Serve(...);
 //
-//   extern "C" bool Server_Bind(std::uint16_t port) noexcept;
+//   extern "C" bool Server_Bind(boost::json::object& config) noexcept;
 //   extern "C" int  Server_Serve(...);
 
 #include "Core/Plugin.hpp"
+#include "Core/Config.hpp"
 #include <cstdint>
 #include <cstddef>
 #include <string>
@@ -41,6 +42,7 @@
 #include <cstring>
 #include <cerrno>
 #include <condition_variable>
+#include <boost/json/object.hpp>
 
 #ifdef _WIN32
     #include <winsock2.h>
@@ -54,7 +56,7 @@
 #include <srt/srt.h>
 
 // ==== Глобальные настройки шифрования SRT (авторизация через passphrase) ====
-static const char kPassphrase[] = "flowforge123";
+static std::string kPassphrase = "flowforge123";
 static const int  kKeyLen      = 32; // AES-256
 
 // ==== Общие константы/утилиты ====
@@ -110,7 +112,7 @@ static bool SetPreConnectOptions(SRTSOCKET s)
 
     // Шифрование/«авторизация».
     if (!SetOpt(s, SRTO_PBKEYLEN, &kKeyLen, sizeof(kKeyLen), "PBKEYLEN")) return false;
-    if (!SetOpt(s, SRTO_PASSPHRASE, kPassphrase, (int)std::strlen(kPassphrase), "PASSPHRASE")) return false;
+    if (!SetOpt(s, SRTO_PASSPHRASE, kPassphrase.c_str(), kPassphrase.size(), "PASSPHRASE")) return false;
 
     // Таймауты I/O.
     int rcvto = kIOTimeoutMs, sndto = kIOTimeoutMs;
@@ -282,8 +284,12 @@ struct ClientState
     std::mutex m;
 } g_client;
 
-PLUGIN_API bool Client_Connect(const std::string &server_ip, std::uint16_t port) noexcept
+PLUGIN_API bool Client_Connect(boost::json::object& config) noexcept
 {
+    int port = Config::RequireInt(config, "port");
+    std::string server_ip = Config::RequireString(config, "server");
+    kPassphrase = Config::RequireString(config, "password");
+
     EnsureSrtStarted();
 
     std::lock_guard<std::mutex> lk(g_client.m);
@@ -447,8 +453,11 @@ struct ServerState
     std::atomic<bool> bound{false};
 } g_server;
 
-PLUGIN_API bool Server_Bind(std::uint16_t port) noexcept
+PLUGIN_API bool Server_Bind(boost::json::object& config) noexcept
 {
+    int port = Config::RequireInt(config, "port");
+    kPassphrase = Config::RequireString(config, "password");
+
     EnsureSrtStarted();
 
     if (g_server.bound.load())

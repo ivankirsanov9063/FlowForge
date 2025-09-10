@@ -18,6 +18,20 @@ if(CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU")
     )
 endif()
 
+# ---- Boost.Json для всех поддиректорий ----
+find_package(Boost REQUIRED COMPONENTS json)
+
+# На старых сборках FindBoost может не создавать целевую Boost::json.
+# Создадим интерфейсную цель как fallback (json — заголовочная библиотека).
+if(NOT TARGET Boost::json)
+    add_library(Boost::json INTERFACE IMPORTED)
+    target_include_directories(Boost::json INTERFACE ${Boost_INCLUDE_DIRS})
+endif()
+
+# Применяем ко всем целям, создаваемым ниже (включая add_subdirectory).
+link_libraries(Boost::json)
+# -------------------------------------------
+
 add_subdirectory(PlugSRT)
 
 install(DIRECTORY DESTINATION bin)

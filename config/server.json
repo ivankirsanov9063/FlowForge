@@ -1,0 +1,12 @@
+{
+  "tun": "svpn0",
+  "port": 5555,
+  "plugin": "./libPlugSRT.so",
+  "cidr4": "10.200.0.1/24",
+  "cidr6": "fd00:dead:beef::1/64",
+  "nat44": "",
+  "nat66": "",
+  "mtu": 1400,
+  "with_nat_fw": true,
+  "no_nat": false
+}
