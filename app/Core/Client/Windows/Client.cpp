@@ -30,6 +30,8 @@ using ssize_t = SSIZE_T;
 #include <vector>
 #include <sstream>
 #include <thread>
+#include <boost/json.hpp>
+#include <boost/log/trivial.hpp>
 
 static std::atomic<bool> g_started { false };
 static volatile sig_atomic_t g_working = 1;
@@ -202,7 +204,7 @@ static std::wstring ResolveFirewallAddressesW(const std::string &host)
     return out;
 }
 
-static int ClientMain(int argc, char **argv)
+static int ClientMain(std::string& config)
 {
     Logger::Options logger_options;
     logger_options.app_name = "FlowForge";
@@ -220,103 +222,133 @@ static int ClientMain(int argc, char **argv)
         return 1;
     }
 
-    std::string tun = "cvpn0";
-    std::string server_ip = "193.233.23.221";
-    int port = 5555;
-    std::string plugin_path = "PlugSRT.dll";
+    std::string tun         = "cvpn0";
+    std::string server_ip   = "193.233.23.221";
+    int         port        = 5555;
+    std::string plugin_path = "./libPlugSRT.so";
 
-    // Address plan defaults (можно переопределить через CLI)
     std::string local4 = "10.200.0.2";
     std::string peer4  = "10.200.0.1";
     std::string local6 = "fd00:dead:beef::2";
     std::string peer6  = "fd00:dead:beef::1";
     int mtu = 1400;
-    // DNS по умолчанию; если указать --dns, список заменится/расширится
+
     std::vector<std::string> dns_cli = {"10.200.0.1", "1.1.1.1"};
     bool dns_overridden = false;
 
-    LOGD("client") << "Parsing CLI arguments";
-    for (int i = 0; i < argc; ++i)
+    LOGD("client") << "Parsing JSON config";
+
+    auto trim_copy = [](const std::string& s) -> std::string
     {
-        std::string a = argv[i];
-        if (a == "--tun" && i + 1 < argc)
+        size_t b = s.find_first_not_of(" \t\r\n");
+        if (b == std::string::npos) return std::string();
+        size_t e = s.find_last_not_of(" \t\r\n");
+        return s.substr(b, e - b + 1);
+    };
+
+    auto require_string = [](const boost::json::object& o, const char* key) -> std::string
+    {
+        if (const boost::json::value* v = o.if_contains(key))
         {
-            tun = argv[++i];
+            if (v->is_string())
+                return boost::json::value_to<std::string>(*v);
         }
-        else if (a == "--server" && i + 1 < argc)
+        throw std::runtime_error(std::string("missing or invalid string field '") + key + "'");
+    };
+
+    auto require_int = [](const boost::json::object& o, const char* key) -> int
+    {
+        if (const boost::json::value* v = o.if_contains(key))
         {
-            server_ip = argv[++i];
-        }
-        else if (a == "--port" && i + 1 < argc)
-        {
-            port = std::stoi(argv[++i]);
-        }
-        else if (a == "--plugin" && i + 1 < argc)
-        {
-            plugin_path = argv[++i];
-        }
-        else if (a == "--local4" && i + 1 < argc)
-        {
-            local4 = argv[++i];
-        }
-        else if (a == "--peer4" && i + 1 < argc)
-        {
-            peer4 = argv[++i];
-        }
-        else if (a == "--local6" && i + 1 < argc)
-        {
-            local6 = argv[++i];
-        }
-        else if (a == "--peer6" && i + 1 < argc)
-        {
-            peer6 = argv[++i];
-        }
-        else if (a == "--mtu" && i + 1 < argc)
-        {
-            mtu = std::stoi(argv[++i]);
-        }
-        else if (a == "--dns" && i + 1 < argc)
-        {
-            std::string v = argv[++i];
-            if (!dns_overridden) { dns_cli.clear(); dns_overridden = true; }
-            // split by comma; пробелы с краёв — убрать
-            size_t start = 0;
-            while (start < v.size())
+            if (v->is_int64())  return static_cast<int>(v->as_int64());
+            if (v->is_uint64()) return static_cast<int>(v->as_uint64());
+            if (v->is_string())
             {
-                size_t pos = v.find(',', start);
-                std::string tok = (pos == std::string::npos) ? v.substr(start) : v.substr(start, pos - start);
-                if (!tok.empty())
-                {
-                    size_t b = tok.find_first_not_of(" \t");
-                    size_t e = tok.find_last_not_of(" \t");
-                    if (b != std::string::npos)
-                    {
-                        dns_cli.emplace_back(tok.substr(b, e - b + 1));
-                    }
-                }
-                if (pos == std::string::npos) break;
-                start = pos + 1;
+                const auto s = boost::json::value_to<std::string>(*v);
+                try { return std::stoi(s); } catch (...) {}
             }
         }
-        else if (a == "-h" || a == "--help")
+        throw std::runtime_error(std::string("missing or invalid integer field '") + key + "'");
+    };
+
+    try
+    {
+        boost::json::value jv = boost::json::parse(config);
+        if (!jv.is_object())
+            throw std::runtime_error("config root must be an object");
+
+        const boost::json::object& o = jv.as_object();
+
+        // Обязательные поля (все):
+        tun         = require_string(o, "tun");
+        server_ip   = require_string(o, "server");
+        port        = require_int(o,    "port");
+        plugin_path = require_string(o, "plugin");
+
+        local4      = require_string(o, "local4");
+        peer4       = require_string(o, "peer4");
+        local6      = require_string(o, "local6");
+        peer6       = require_string(o, "peer6");
+
+        mtu         = require_int(o,    "mtu");
+
+        // dns: допускаем либо массив строк, либо строку "ip,ip,..."
+        dns_cli.clear();
+        if (const boost::json::value* dv = o.if_contains("dns"))
         {
-            LOGI("client") << "Usage: Client --server <ip|ipv6> [--port 5555] [--tun cvpn0] "
-                              "[--plugin PlugSRT.dll] [--local4 A.B.C.D] [--peer4 A.B.C.D] "
-                              "[--local6 ::addr] [--peer6 ::addr] [--mtu 1400] [--dns ip[,ip...]]";
-
-            return 0;
+            if (dv->is_array())
+            {
+                for (const boost::json::value& x : dv->as_array())
+                {
+                    if (!x.is_string())
+                        throw std::runtime_error("dns array must contain strings");
+                    std::string s = trim_copy(boost::json::value_to<std::string>(x));
+                    if (!s.empty()) dns_cli.emplace_back(std::move(s));
+                }
+            }
+            else if (dv->is_string())
+            {
+                std::string v = boost::json::value_to<std::string>(*dv);
+                size_t start = 0;
+                while (start < v.size())
+                {
+                    size_t pos = v.find(',', start);
+                    std::string tok = (pos == std::string::npos) ? v.substr(start)
+                                                                 : v.substr(start, pos - start);
+                    tok = trim_copy(tok);
+                    if (!tok.empty()) dns_cli.emplace_back(std::move(tok));
+                    if (pos == std::string::npos) break;
+                    start = pos + 1;
+                }
+            }
+            else
+            {
+                throw std::runtime_error("dns must be either array of strings or comma-separated string");
+            }
+            dns_overridden = true;
         }
-    }
+        else
+        {
+            throw std::runtime_error("missing required field 'dns'");
+        }
 
-    LOGD("client") << "Args: tun=" << tun << " server=" << server_ip << " port=" << port
+        LOGD("client") << "Args: tun=" << tun << " server=" << server_ip << " port=" << port
                    << " plugin=" << plugin_path
                    << " local4=" << local4 << " peer4=" << peer4
                    << " local6=" << local6 << " peer6=" << peer6
                    << " mtu=" << mtu;
 
-    if (server_ip.empty())
+        // Базовая валидация
+        if (server_ip.empty())
+            throw std::runtime_error("'server' cannot be empty");
+        if (port <= 0 || port > 65535)
+            throw std::runtime_error("'port' must be in [1..65535]");
+        if (mtu < 576 || mtu > 9200)
+            throw std::runtime_error("'mtu' must be in [576..9200]");
+    }
+    catch (const std::exception& e)
     {
-        LOGE("client") << "Client: --server <ip|ipv6> required";
+        LOGE("client") << "Config error: " << e.what();
         return 1;
     }
 
@@ -542,8 +574,8 @@ static int ClientMain(int argc, char **argv)
 }
 
 // Запуск клиента в отдельном потоке.
-// Ожидается, что argv/len — это ТОЛЬКО аргументы (без argv[0]).
-EXPORT int32_t Start(char **argv, int32_t len)
+// cfg - json-данные конфига
+EXPORT int32_t Start(char *cfg)
 {
     if (g_started.load())
     {
@@ -551,32 +583,12 @@ EXPORT int32_t Start(char **argv, int32_t len)
     }
 
     // Снимем копию аргументов, чтобы не зависеть от времени жизни входных указателей.
-    std::vector<std::string> args;
-
-    if (argv && len > 0)
-    {
-        args.reserve(static_cast<size_t>(len) + 1);
-        for (int32_t i = 0; i < len; ++i)
-        {
-            if (argv[i] && *argv[i])
-            {
-                args.emplace_back(argv[i]);
-            }
-        }
-    }
+    std::string config = cfg;
     g_working = 1;
 
-    g_thread = std::thread([args]() mutable
+    g_thread = std::thread([config]() mutable
        {
-           std::vector<char *> cargs;
-           cargs.reserve(args.size());
-           for (auto &s: args)
-           {
-               // безопасно: строки живут до конца лямбды
-               cargs.push_back(const_cast<char *>(s.c_str()));
-           }
-
-           ClientMain(static_cast<int>(cargs.size()), cargs.data());
+           ClientMain(config);
            g_started.store(false);
        });
 

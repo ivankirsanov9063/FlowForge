@@ -16,12 +16,13 @@
 #include <memory>
 #include <stdexcept>
 #include <cstdint>
+#include <boost/json.hpp>
 
 static std::atomic<bool> g_started { false };
 static volatile sig_atomic_t g_working = 1;
 static std::thread g_thread;
 
-static int ServerMain(int argc, char **argv)
+static int ServerMain(std::string& config)
 {
     Logger::Options logger_options;
     logger_options.app_name = "FlowForge";
@@ -31,13 +32,13 @@ static int ServerMain(int argc, char **argv)
     logger_options.console_min_severity = boost::log::trivial::debug;
 
     Logger::Guard logger(logger_options);
-    LOGI("server") << "Startup: begin, argc=" << argc;
+    LOGI("server") << "Startup: begin";
 
     std::string tun         = "svpn0";
     int         port        = 5555;
     std::string plugin_path = "./libPlugSRT.so";
 
-    // Параметры адресации/NAT — задаются флагами
+    // Параметры адресации/NAT — задаются через конфиг
     std::string cidr4       = "10.200.0.1/24";
     std::string cidr6       = "fd00:dead:beef::1/64";
     std::string nat44_src; // если пусто — возьмём сеть из cidr4
@@ -45,63 +46,116 @@ static int ServerMain(int argc, char **argv)
     int         mtu         = 1400;
     bool        with_nat_fw = true;
 
-    for (int i = 1; i < argc; ++i)
+    try
     {
-        std::string a = argv[i];
-        if (a == "--tun" && i + 1 < argc)
+        boost::json::value jv = boost::json::parse(config);
+        const auto& o = jv.as_object();
+
+        auto set_str = [&](const char* key, std::string& dst, const char* log_arg_name)
         {
-            tun = argv[++i];
-            LOGD("server") << "Arg: --tun " << tun;
-        }
-        else if (a == "--port" && i + 1 < argc)
+            if (const auto* pv = o.if_contains(key))
+            {
+                if (pv->is_string())
+                {
+                    dst = std::string(pv->as_string().c_str());
+                    LOGD("server") << "Arg: " << log_arg_name << " " << dst;
+                }
+            }
+        };
+
+        auto set_int = [&](const char* key, int& dst, const char* log_arg_name)
         {
-            port = std::stoi(argv[++i]);
-            LOGD("server") << "Arg: --port " << port;
-        }
-        else if (a == "--plugin" && i + 1 < argc)
+            if (const auto* pv = o.if_contains(key))
+            {
+                if (pv->is_int64())
+                {
+                    dst = static_cast<int>(pv->as_int64());
+                    LOGD("server") << "Arg: " << log_arg_name << " " << dst;
+                }
+                else if (pv->is_uint64())
+                {
+                    dst = static_cast<int>(pv->as_uint64());
+                    LOGD("server") << "Arg: " << log_arg_name << " " << dst;
+                }
+                else if (pv->is_string())
+                {
+                    try
+                    {
+                        dst = std::stoi(std::string(pv->as_string().c_str()));
+                        LOGD("server") << "Arg: " << log_arg_name << " " << dst;
+                    }
+                    catch (...) { LOGE("server") << "Config: '" << key << "' is not a valid integer"; }
+                }
+            }
+        };
+
+        auto set_bool = [&](const char* key, bool& dst, const char* log_arg_name)
         {
-            plugin_path = argv[++i];
-            LOGD("server") << "Arg: --plugin " << plugin_path;
-        }
-        else if (a == "--cidr4" && i + 1 < argc)
+            if (const auto* pv = o.if_contains(key))
+            {
+                if (pv->is_bool())
+                {
+                    dst = pv->as_bool();
+                    LOGD("server") << "Arg: " << log_arg_name << " " << (dst ? "true" : "false");
+                }
+                else if (pv->is_string())
+                {
+                    std::string s = std::string(pv->as_string().c_str());
+                    std::transform(s.begin(), s.end(), s.begin(),
+                                   [](unsigned char c){ return static_cast<char>(std::tolower(c)); });
+                    if (s == "1" || s == "true" || s == "yes" || s == "on")
+                    {
+                        dst = true;
+                        LOGD("server") << "Arg: " << log_arg_name << " true";
+                    }
+                    else if (s == "0" || s == "false" || s == "no" || s == "off")
+                    {
+                        dst = false;
+                        LOGD("server") << "Arg: " << log_arg_name << " false";
+                    }
+                }
+            }
+        };
+
+        // Присваивания из JSON (если ключа нет — остаётся дефолт)
+        set_str("tun",         tun,         "--tun");
+        set_int("port",        port,        "--port");
+        // В конфиге ключ — "plugin", как во флаге; кладём в plugin_path
+        set_str("plugin",      plugin_path, "--plugin");
+
+        set_str("cidr4",       cidr4,       "--cidr4");
+        set_str("cidr6",       cidr6,       "--cidr6");
+        set_str("nat44",       nat44_src,   "--nat44");
+        set_str("nat66",       nat66_src,   "--nat66");
+        set_int("mtu",         mtu,         "--mtu");
+
+        // Поддерживаем оба варианта:
+        // 1) with_nat_fw: true/false
+        // 2) no_nat: true -> отключает NAT/MSS/FW
+        set_bool("with_nat_fw", with_nat_fw, "with_nat_fw");
+        if (const auto* pv = o.if_contains("no_nat"))
         {
-            cidr4 = argv[++i];
-            LOGD("server") << "Arg: --cidr4 " << cidr4;
+            bool no_nat = false;
+            // Разбираем логически, как в set_bool (минимально)
+            if (pv->is_bool()) { no_nat = pv->as_bool(); }
+            else if (pv->is_string())
+            {
+                std::string s = std::string(pv->as_string().c_str());
+                std::transform(s.begin(), s.end(), s.begin(),
+                               [](unsigned char c){ return static_cast<char>(std::tolower(c)); });
+                no_nat = (s == "1" || s == "true" || s == "yes" || s == "on");
+            }
+            if (no_nat)
+            {
+                with_nat_fw = false;
+                LOGD("server") << "Arg: --no-nat (NAT/MSS/FW disabled)";
+            }
         }
-        else if (a == "--cidr6" && i + 1 < argc)
-        {
-            cidr6 = argv[++i];
-            LOGD("server") << "Arg: --cidr6 " << cidr6;
-        }
-        else if (a == "--nat44" && i + 1 < argc)
-        {
-            nat44_src = argv[++i];
-            LOGD("server") << "Arg: --nat44 " << nat44_src;
-        }
-        else if (a == "--nat66" && i + 1 < argc)
-        {
-            nat66_src = argv[++i];
-            LOGD("server") << "Arg: --nat66 " << nat66_src;
-        }
-        else if (a == "--mtu" && i + 1 < argc)
-        {
-            mtu = std::stoi(argv[++i]);
-            LOGD("server") << "Arg: --mtu " << mtu;
-        }
-        else if (a == "--no-nat")
-        {
-            with_nat_fw = false;
-            LOGD("server") << "Arg: --no-nat (NAT/MSS/FW disabled)";
-        }
-        else if (a == "-h" || a == "--help")
-        {
-            LOGI("server")
-                << "Usage: Server [--port 5555] [--tun svpn0] [--plugin ./libPlugSRT.so]\n"
-                   "              [--cidr4 10.200.0.1/24] [--cidr6 fd00:dead:beef::1/64]\n"
-                   "              [--nat44 <CIDR>] [--nat66 <CIDR>] [--mtu 1400] [--no-nat]\n";
-            LOGI("server") << "Help displayed";
-            return 0;
-        }
+    }
+    catch (const std::exception& e)
+    {
+        LOGE("server") << "Failed to parse config JSON: " << e.what();
+        return 1; // если это внутри main
     }
 
     LOGI("server") << "Args: tun=" << tun
@@ -278,8 +332,8 @@ static int ServerMain(int argc, char **argv)
 }
 
 // Запуск сервера в отдельном потоке.
-// Ожидается, что argv/len — это ТОЛЬКО аргументы (без argv[0]).
-EXPORT int32_t Start(char **argv, int32_t len)
+// cfg - json-данные конфига
+EXPORT int32_t Start(char *cfg)
 {
     if (g_started.load())
     {
@@ -288,31 +342,12 @@ EXPORT int32_t Start(char **argv, int32_t len)
 
     // Снимем копию аргументов, чтобы не зависеть от времени жизни входных указателей.
     std::vector<std::string> args;
-
-    if (argv && len > 0)
-    {
-        args.reserve(static_cast<size_t>(len) + 1);
-        for (int32_t i = 0; i < len; ++i)
-        {
-            if (argv[i] && *argv[i])
-            {
-                args.emplace_back(argv[i]);
-            }
-        }
-    }
+    std::string config = cfg;
     g_working = 1;
 
-    g_thread = std::thread([args]() mutable
+    g_thread = std::thread([config]() mutable
                            {
-                               std::vector<char *> cargs;
-                               cargs.reserve(args.size());
-                               for (auto &s: args)
-                               {
-                                   // безопасно: строки живут до конца лямбды
-                                   cargs.push_back(const_cast<char *>(s.c_str()));
-                               }
-
-                               ServerMain(static_cast<int>(cargs.size()), cargs.data());
+                               ServerMain(config);
                                g_started.store(false);
                            });
 

@@ -10,8 +10,8 @@
 #endif
 
 // Запуск клиента в отдельном потоке.
-// Ожидается, что argv/len — это ТОЛЬКО аргументы (без argv[0]).
-EXPORT int32_t Start(char **argv, int32_t len);
+// cfg - json-данные конфига
+EXPORT int32_t Start(char *cfg);
 
 // Мягкая остановка: сигналим рабочему коду и НЕ блокируем вызывающего.
 EXPORT int32_t Stop(void);

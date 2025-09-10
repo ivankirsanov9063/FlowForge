@@ -1,3 +1,4 @@
+# --- ServerCore ---
 add_library(ServerCore SHARED
         ${CMAKE_SYSTEM_NAME}/Server.cpp
         ${CMAKE_SYSTEM_NAME}/Network.cpp
@@ -9,11 +10,31 @@ add_library(ServerCore SHARED
 )
 
 target_compile_features(ServerCore PRIVATE cxx_std_23)
-
 target_include_directories(ServerCore PRIVATE ${CMAKE_SOURCE_DIR} ${CMAKE_CURRENT_SOURCE_DIR})
 
-find_package(Boost REQUIRED COMPONENTS log log_setup thread filesystem)
-target_link_libraries(ServerCore PUBLIC Boost::log Boost::log_setup Boost::thread Boost::filesystem)
+find_package(Boost REQUIRED
+        COMPONENTS log log_setup filesystem thread regex date_time chrono atomic json container)
+find_package(Threads REQUIRED)
+
+# динамические boost-*.so
+target_compile_definitions(ServerCore PRIVATE BOOST_ALL_DYN_LINK BOOST_LOG_DYN_LINK)
+
+# ВАЖНО: все зависимости Boost.Log — PRIVATE к библиотеке
+target_link_libraries(ServerCore
+        PRIVATE
+        Boost::log
+        Boost::log_setup
+        Boost::filesystem
+        Boost::thread
+        Boost::regex
+        Boost::date_time
+        Boost::chrono
+        Boost::atomic
+        Threads::Threads
+        PUBLIC
+        Boost::json      # если JSON в публичных заголовках
+        Boost::container # убери, если не нужен в интерфейсе
+)
 
 if (CMAKE_SYSTEM_NAME STREQUAL "Linux")
     find_package(PkgConfig REQUIRED)
@@ -23,4 +44,4 @@ if (CMAKE_SYSTEM_NAME STREQUAL "Linux")
     target_link_libraries(ServerCore PRIVATE ${LIBNL_LIBRARIES} ${NFT_LIBRARIES})
 endif()
 
-install(TARGETS ServerCore RUNTIME DESTINATION bin)
+install(TARGETS ServerCore RUNTIME DESTINATION bin LIBRARY DESTINATION bin)

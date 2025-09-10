@@ -25,7 +25,7 @@ endif()
 target_compile_features(ClientCore PRIVATE cxx_std_23)
 target_include_directories(ClientCore PRIVATE ${CMAKE_SOURCE_DIR} ${CMAKE_CURRENT_SOURCE_DIR})
 
-find_package(Boost REQUIRED COMPONENTS log log_setup thread filesystem regex)
+find_package(Boost REQUIRED COMPONENTS log log_setup thread filesystem regex json)
 find_package(Threads REQUIRED)
 
 # Важно: log_setup раньше log; добавляем потоки и dl (Linux)
@@ -36,6 +36,7 @@ target_link_libraries(ClientCore
         Boost::thread
         Boost::filesystem
         Boost::regex
+        Boost::json
         Threads::Threads
 )
 
